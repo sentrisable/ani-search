@@ -7,10 +7,13 @@ use std::{
 };
 
 use json::parse;
-use serde_derive::Deserialize;
-use serde_derive::Serialize;
+
 use serde_json::Value;
 use curl::easy::{Handler, Easy2, WriteError, ReadError, List};
+
+mod structs;
+
+pub use structs::*;
 
 #[derive(PartialEq, Debug)]
 pub enum Translation{
@@ -35,40 +38,6 @@ impl Handler for PostHandler{
         self.response_data.extend_from_slice(data);
         Ok(data.len())
     }
-}
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Root {
-    pub data: Data,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Data {
-    pub shows: Shows,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Shows {
-    pub edges: Vec<Edge>,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Edge {
-    pub available_episodes: AvailableEpisodes,
-    pub id: String,
-    pub name: String,
-    pub typename: String,
-}
-
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AvailableEpisodes {
-    pub dub: Option<i64>,
-    pub raw: Option<i64>,
-    pub sub: Option<i64>,
 }
 
 fn post_curl(payload: String, show_id: Option<&String>) ->Result<String, Box<dyn std::error::Error>>{
@@ -114,28 +83,30 @@ pub fn get_shows() -> Result<Vec<Edge>, Box<dyn std::error::Error>>{
     let payload = format!("{{\"variables\":{{\"search\":{{\"allowAdult\":true,\"allowUnknown\":false,\"query\":\"yani\"}},\"limit\":40,\"page\":1,\"translationType\":\"sub\",\"countryOrigin\":\"ALL\"}},\"query\":\"{search_gql}\"}}");
 
     let response = post_curl(payload, None)?;
-    //let json: Value = serde_json::from_str(response)?; 
-    //println!("Response Body: {json:?}");
+    // let json: Value = serde_json::from_str(&response)?; 
+    // println!("Response Body: {json:?}");
 
-    let data:Root = serde_json::from_str(&response)?;
+    let data:shows::Root = serde_json::from_str(&response)?;
+    println!("Response Body: {data:?}");
+
     
     Ok(data.data.shows.edges)
 }
 
-pub fn get_episode_list(show_id: &String) -> Result<(), Box<dyn std::error::Error>>{
+pub fn get_episode_list(show_id: &String) -> Result<episodes::AvailableEpisodesDetail, Box<dyn std::error::Error>>{
     let episode_list_gql = "query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}";
 
     let payload = format!("{{\"variables\":{{\"showId\":\"{show_id}\"}},\"query\":\"{episode_list_gql}\"}}");
 
     let response = post_curl(payload, Some(show_id))?;
-    let json:Value = serde_json::from_str(&response)?;
-    println!("{:?}", json["data"]);
+    // let json:Value = serde_json::from_str(&response)?;
+    // println!("{:?}", json);
 
-    let data:Edge = serde_json::from_str(&json["data"]["show"].to_string().replace("Detail", ""))?;
+    let data:episodes::Root = serde_json::from_str(&response)?;
     println!("{:?}", data);
 
 
-    Ok(())
+    Ok(data.data.show.available_episodes_detail)
 
 }
 

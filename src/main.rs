@@ -7,10 +7,7 @@ use tokio::runtime::Runtime;
 
 
 use ani_search::{
-    get_shows,
-    get_episode_list,
-    Translation,
-    Edge,
+    Edge, Translation, episodes, get_episode_list, get_shows,
 
     
 };
@@ -36,7 +33,7 @@ struct Main{
     anime: String,
     translation: Translation,
     shows: Vec<Edge>,
-
+    episode_list: episodes::AvailableEpisodesDetail,
     tx: Sender<String>,
     rx: Receiver<String>,
 }
@@ -48,6 +45,7 @@ impl Default for Main{
             anime: Default::default(),
             translation: Translation::Sub,
             shows: Vec::new(),
+            episode_list:  episodes::AvailableEpisodesDetail { dub: Vec::new(), raw: Vec::new(), sub:  Vec::new() },
             tx, 
             rx 
         }
@@ -80,26 +78,28 @@ impl eframe::App for Main{
             });
 
             if !self.shows.is_empty(){
-                let mut selected_states = vec![false; self.shows.clone().len()];
+                let selected_states = vec![false; self.shows.clone().len()];
                 for (i,show) in self.shows.iter().enumerate()
                 {
-                    let mut is_selected = selected_states[i];
+                    let is_selected = selected_states[i];
                     ui.horizontal(|ui|{
                         // ui.label(&show.id);
                         // ui.separator();
 
                         if ui.selectable_label(is_selected, &show.name).clicked(){
-                            get_episode_list(&show.id);
+                            if let Ok(eps) = get_episode_list(&show.id){
+                                self.episode_list = eps.clone();
+                            }
                         };
                         ui.separator();
                         ui.label("Number of episodes :");
                         match self.translation{
                             Translation::Sub => {
-                                if let Some(sub) = show.available_episodes.sub{
-                                    ui.label(sub.to_string());
-                                } else {
-                                    ui.label("No available episodes for that translation type");
-                                }
+                                    if let Some(sub) = show.available_episodes.sub{
+                                        ui.label(sub.to_string());
+                                    } else {
+                                        ui.label("No available episodes for that translation type");
+                                    }
                             },
                             Translation::Dub => {
                                 if let Some(dub) = show.available_episodes.dub{
@@ -114,7 +114,8 @@ impl eframe::App for Main{
                                 } else {
                                     ui.label("No available episodes for that translation type");
                                 }
-                            }
+                            },
+
 
                         }
                     });
