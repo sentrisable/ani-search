@@ -1,5 +1,4 @@
-use serde_derive::Deserialize;
-use serde_derive::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,4 +26,17 @@ pub struct AvailableEpisodesDetail {
     pub dub: Vec<Option<String>>,
     pub raw: Vec<Option<String>>,
     pub sub: Vec<Option<String>>,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct URLData{
+    pub m: String,
+    pub tobeparsed: String
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct URLRoot{
+    pub data: URLData
 }
