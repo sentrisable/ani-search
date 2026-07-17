@@ -7,7 +7,7 @@ use tokio::runtime::Runtime;
 
 
 use ani_search::{
-    AvailableEpisodes, Edge, Translation, animeschedule, episode_source, episodes, get_episode_list, get_episode_url, get_next_episode_release, get_shows,
+    AvailableEpisodes, Edge, Translation, animeschedule, episode_source, episodes, generate_link, get_episode_list, get_episode_url, get_next_episode_release, get_shows,
 
     
 };
@@ -201,8 +201,8 @@ impl eframe::App for Main{
                                         self.selected_episode = ep.clone();
                                         match get_episode_url(&self.selected_show.id, &"sub".to_string(), ep){
                                         Ok(urls) =>{
-                                            //self.selected_episode_urls = urls;
-                                            let child =process::Command::new("mpv").arg(&urls[2].source_url.clone()).spawn().expect("Failed to start mpv");
+                                            self.selected_episode_urls = urls.clone();
+                                            //let child =process::Command::new("mpv").arg(&urls[2].source_url.clone()).spawn().expect("Failed to start mpv");
 
                                         },
                                         Err(e) => {
@@ -210,6 +210,30 @@ impl eframe::App for Main{
                                         } 
                                         
                                     }
+                                    }
+                                    // dbg!(&self.selected_episode);
+                                    // dbg!(&ep);
+                                    if self.selected_episode == ep.clone(){
+                                        ui.horizontal(|ui|{
+                                            let selected_url = vec![false; self.selected_episode_urls.clone().len()];
+                                            for (i,url) in self.selected_episode_urls.clone().iter().enumerate(){
+                                                if ui.selectable_label(selected_url[i], &url.source_name).clicked(){
+                                                    
+                                                    generate_link(&url);
+                                                    //let media_title_arg = format!("--force-media-title=\"{}\": Episode {}", self.selected_show.name, self.selected_episode);
+                                                    //println!("{}",url.source_url);
+                                                    //let refer_flag_arg = "--referrer=https://www.mp4upload.com";
+
+                                                    //let spawn_player = process::Command::new("mpv").arg("--tls-verify=no").arg(media_title_arg).arg(&url.source_url.clone()).spawn();
+                                                    //match spawn_player{
+                                                    //    Ok(child) => {},
+                                                    //    Err(e)=> {println!("{e}");}
+                                                    //}
+                                                };
+                                                ui.separator();
+                                            }
+                                        });
+                                        
                                     }
                                }
                                

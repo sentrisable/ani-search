@@ -31,6 +31,7 @@ pub struct AvailableEpisodesDetail {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct URLData{
+    #[serde(rename = "_m")]
     pub m: String,
     pub tobeparsed: String
 }
