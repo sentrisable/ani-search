@@ -91,6 +91,7 @@ impl eframe::App for Main{
             Pages::Main => {
                 ui.horizontal(|ui|{
                     ui.add(egui::TextEdit::singleline(&mut self.anime).hint_text("Search for show..."));
+                    
                     ComboBox::new("translation", "Translation Type").selected_text(format!("{:?}", self.translation)).show_ui(ui, |ui|{
                             ui.selectable_value(&mut self.translation, Translation::Sub, "Sub");
                             ui.selectable_value(&mut self.translation, Translation::Dub, "Dub");
@@ -99,14 +100,16 @@ impl eframe::App for Main{
                     );
                     
                     if ui.button("Search").clicked(){
-                        if let Ok(shows) = get_shows(){
+                        if let Ok(shows) = get_shows(&self.anime, &self.translation){
                             self.shows = shows.clone();
                         }
                     }
                 });
 
                 if !self.shows.is_empty(){
-                    let selected_states = vec![false; self.shows.clone().len()];
+                    egui::ScrollArea::vertical().id_salt("show_list").show(ui, |ui|{
+let selected_states = vec![false; self.shows.clone().len()];
+
                     for (i,show) in self.shows.iter().enumerate()
                     {
                         let is_selected = selected_states[i];
@@ -155,6 +158,8 @@ impl eframe::App for Main{
                         });
                         
                     }
+                    });
+                    
                 }
 
             },
@@ -164,8 +169,14 @@ impl eframe::App for Main{
                         self.pages = Pages::Main;
                         ui.ctx().request_repaint();
                     }
-                    ui.label(&self.selected_show.name);
-                    
+                    ui.heading(&self.selected_show.name);
+
+                    ComboBox::new("translation", "Translation Type").selected_text(format!("{:?}", self.translation)).show_ui(ui, |ui|{
+                            ui.selectable_value(&mut self.translation, Translation::Sub, "Sub");
+                            ui.selectable_value(&mut self.translation, Translation::Dub, "Dub");
+                            ui.selectable_value(&mut self.translation, Translation::Raw, "Raw");
+                        }
+                    );
                     
                 });
                 if self.show_info == animeschedule::Anime::default(){
@@ -193,9 +204,10 @@ impl eframe::App for Main{
                 match self.translation{
                     Translation::Sub => {
                         if !self.episode_list.sub.is_empty(){
+                            ui.heading("Subbed Episodes");
                             let selected_states = vec![false;self.episode_list.sub.clone().len()];
                             for (i,episodes) in self.episode_list.sub.iter().rev().enumerate(){
-                                let mut is_selected = selected_states[i];
+                                let is_selected = selected_states[i];
                                 if let Some(ep) = episodes{
                                     if ui.selectable_label(is_selected, format!("Episode: {ep}")).clicked(){
                                         self.selected_episode = ep.clone();
@@ -215,12 +227,36 @@ impl eframe::App for Main{
                                     // dbg!(&ep);
                                     if self.selected_episode == ep.clone(){
                                         ui.horizontal(|ui|{
+                                            ui.label("Sources: ");
                                             let selected_url = vec![false; self.selected_episode_urls.clone().len()];
                                             for (i,url) in self.selected_episode_urls.clone().iter().enumerate(){
-                                                if ui.selectable_label(selected_url[i], &url.source_name).clicked(){
+                                                if let Some(source_name) = &url.source_name{
+                                                    match source_name.as_str(){
+                                                        //| "Fm-Hls" | "S-mp4" | "Yt-mp4" will add later once I get them set up
+                                                        "Mp4" => {
+                                                            
+                                                            if ui.selectable_label(selected_url[i], source_name).clicked(){
+                                                                if let Ok(episode_link)=generate_link(&url){
+                                                                    let media_title_arg = format!("--force-media-title=\"{}\": Episode {}", self.selected_show.name, self.selected_episode);
+                                                                    let mut refer_flag_arg = String::new();
+                                                                    match source_name.as_str() {
+                                                                        "Mp4" => refer_flag_arg = "--referrer=https://www.mp4upload.com".to_string(),
+                                                                        _ => ()
+
+                                                                    }
+                                                                    let spawn_player = process::Command::new("mpv").arg("--tls-verify=no").arg(media_title_arg).arg(refer_flag_arg).arg(episode_link).spawn();
+                                                                }
+                                                            }
+                                                            ui.separator();
+                                                        },
+                                                        _=>{}
+                                                    }
+                                                } else {
+                                                    todo!("Handle Error Logging")
+                                                }
+                                                
                                                     
-                                                    generate_link(&url);
-                                                    //let media_title_arg = format!("--force-media-title=\"{}\": Episode {}", self.selected_show.name, self.selected_episode);
+                                                    //
                                                     //println!("{}",url.source_url);
                                                     //let refer_flag_arg = "--referrer=https://www.mp4upload.com";
 
@@ -230,8 +266,8 @@ impl eframe::App for Main{
                                                     //    Err(e)=> {println!("{e}");}
                                                     //}
                                                 };
-                                                ui.separator();
-                                            }
+                                                
+                      
                                         });
                                         
                                     }

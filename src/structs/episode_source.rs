@@ -4,45 +4,45 @@ use serde_json::Value;
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Root {
-    pub episode: Episode,
+    pub episode: Option<Episode>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Episode {
-    pub episode_string: String,
-    pub upload_date: UploadDate,
-    pub source_urls: Vec<SourceUrl>,
-    pub thumbnail: Value,
-    pub notes: Value,
-    pub show: Show,
-    pub page_status: PageStatus,
-    pub episode_info: EpisodeInfo,
-    pub version_fix: Value,
+    pub episode_string: Option<String>,
+    pub upload_date: Option<UploadDate>,
+    pub source_urls: Option<Vec<SourceUrl>>,
+    pub thumbnail: Option<Value>,
+    pub notes: Option<Value>,
+    pub show: Option<Show>,
+    pub page_status: Option<PageStatus>,
+    pub episode_info: Option<EpisodeInfo>,
+    pub version_fix: Option<Value>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadDate {
-    pub hour: i64,
-    pub minute: i64,
-    pub year: i64,
-    pub month: i64,
-    pub date: i64,
-    pub second: i64,
+    pub hour: Option<i64>,
+    pub minute: Option<i64>,
+    pub year: Option<i64>,
+    pub month: Option<i64>,
+    pub date: Option<i64>,
+    pub second: Option<i64>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceUrl {
-    pub source_url: String,
-    pub priority: f64,
-    pub source_name: String,
-    pub stype: String,
+    pub source_url: Option<String>,
+    pub priority: Option<f64>,
+    pub source_name: Option<String>,
+    pub stype: Option<String>,
     #[serde(rename = "type")]
-    pub type_field: String,
-    pub class_name: String,
-    pub streamer_id: String,
+    pub type_field: Option<String>,
+    pub class_name: Option<String>,
+    pub streamer_id: Option<String>,
     pub downloads: Option<Downloads>,
     pub sandbox: Option<String>,
     pub fall_back: Option<String>,
@@ -52,57 +52,57 @@ pub struct SourceUrl {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Downloads {
-    pub source_name: String,
-    pub download_url: String,
+    pub source_name: Option<String>,
+    pub download_url: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Show {
     #[serde(rename = "_id")]
-    pub id: String,
-    pub name: String,
-    pub english_name: String,
-    pub native_name: String,
-    pub slug_time: Value,
-    pub thumbnail: String,
-    pub last_episode_info: LastEpisodeInfo,
-    pub last_episode_date: LastEpisodeDate,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub english_name: Option<String>,
+    pub native_name: Option<String>,
+    pub slug_time: Option<Value>,
+    pub thumbnail: Option<String>,
+    pub last_episode_info: Option<LastEpisodeInfo>,
+    pub last_episode_date: Option<LastEpisodeDate>,
     #[serde(rename = "type")]
-    pub type_field: String,
-    pub season: Season,
-    pub score: i64,
-    pub aired_start: AiredStart,
-    pub available_episodes: AvailableEpisodes,
-    pub episode_duration: String,
-    pub episode_count: Value,
-    pub last_update_end: Value,
-    pub character_count: Value,
-    pub description: String,
-    pub broadcast_interval: Value,
-    pub banner: String,
-    pub characters: Value,
-    pub available_episodes_detail: AvailableEpisodesDetail,
-    pub name_only_string: String,
-    pub is_adult: bool,
-    pub related_shows: Vec<RelatedShow>,
-    pub related_mangas: Vec<RelatedManga>,
-    pub alt_names: Vec<String>,
-    pub disqus_ids: DisqusIds,
+    pub type_field: Option<String>,
+    pub season: Option<Season>,
+    pub score: Option<Value>,
+    pub aired_start: Option<AiredStart>,
+    pub available_episodes: Option<AvailableEpisodes>,
+    pub episode_duration: Option<String>,
+    pub episode_count: Option<Value>,
+    pub last_update_end: Option<Value>,
+    pub character_count: Option<Value>,
+    pub description: Option<String>,
+    pub broadcast_interval: Option<Value>,
+    pub banner: Option<String>,
+    pub characters: Option<Value>,
+    pub available_episodes_detail: Option<AvailableEpisodesDetail>,
+    pub name_only_string: Option<String>,
+    pub is_adult: Option<bool>,
+    pub related_shows: Option<Vec<RelatedShow>>,
+    pub related_mangas: Option<Vec<RelatedManga>>,
+    pub alt_names: Option<Vec<String>>,
+    pub disqus_ids: Option<DisqusIds>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LastEpisodeInfo {
-    pub sub: Sub,
-    pub dub: Dub,
-    pub raw: Raw,
+    pub sub: Option<Sub>,
+    pub dub: Option<Dub>,
+    pub raw: Option<Raw>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sub {
-    pub episode_string: String,
+    pub episode_string: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,61 +118,61 @@ pub struct Raw {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LastEpisodeDate {
-    pub sub: Sub2,
+    pub sub: Option<Sub2>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sub2 {
-    pub hour: i64,
-    pub minute: i64,
-    pub year: i64,
-    pub month: i64,
-    pub date: i64,
-    pub second: i64,
+    pub hour: Option<i64>,
+    pub minute: Option<i64>,
+    pub year: Option<i64>,
+    pub month: Option<i64>,
+    pub date: Option<i64>,
+    pub second: Option<i64>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Season {
-    pub quarter: String,
-    pub year: i64,
+    pub quarter: Option<String>,
+    pub year: Option<Value>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiredStart {
-    pub year: i64,
-    pub month: i64,
-    pub date: i64,
+    pub year: Option<i64>,
+    pub month: Option<i64>,
+    pub date: Option<i64>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AvailableEpisodes {
-    pub sub: i64,
+    pub sub: Option<i64>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AvailableEpisodesDetail {
-    pub sub: Vec<String>,
-    pub dub: Vec<Value>,
-    pub raw: Vec<Value>,
+    pub sub: Option<Vec<String>>,
+    pub dub: Option<Vec<Value>>,
+    pub raw: Option<Vec<Value>>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelatedShow {
-    pub relation: String,
-    pub show_id: String,
+    pub relation: Option<String>,
+    pub show_id: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelatedManga {
-    pub relation: String,
-    pub manga_id: String,
+    pub relation: Option<String>,
+    pub manga_id: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -184,41 +184,41 @@ pub struct DisqusIds {
 #[serde(rename_all = "camelCase")]
 pub struct PageStatus {
     #[serde(rename = "_id")]
-    pub id: String,
-    pub notes: Value,
-    pub page_id: String,
-    pub show_id: String,
-    pub views: String,
-    pub likes_count: String,
-    pub comment_count: String,
-    pub dislikes_count: String,
-    pub review_count: String,
-    pub user_score_count: String,
-    pub user_score_total_value: f64,
-    pub user_score_aver_value: f64,
-    pub viewers: Viewers,
+    pub id: Option<String>,
+    pub notes: Option<Value>,
+    pub page_id: Option<String>,
+    pub show_id: Option<String>,
+    pub views: Option<String>,
+    pub likes_count: Option<String>,
+    pub comment_count: Option<String>,
+    pub dislikes_count: Option<String>,
+    pub review_count: Option<String>,
+    pub user_score_count: Option<String>,
+    pub user_score_total_value: Option<f64>,
+    pub user_score_aver_value: Option<f64>,
+    pub viewers: Option<Viewers>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Viewers {
-    pub first_viewers: Vec<FirstViewer>,
-    pub rec_viewers: Vec<RecViewer>,
+    pub first_viewers: Option<Vec<FirstViewer>>,
+    pub rec_viewers: Option<Vec<RecViewer>>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FirstViewer {
-    pub view_count: i64,
-    pub last_watched_date: String,
-    pub user: Value,
+    pub view_count: Option<i64>,
+    pub last_watched_date: Option<String>,
+    pub user: Option<Value>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecViewer {
-    pub view_count: i64,
-    pub last_watched_date: String,
+    pub view_count: Option<i64>,
+    pub last_watched_date: Option<String>,
     pub user: Option<User>,
 }
 
@@ -226,36 +226,38 @@ pub struct RecViewer {
 #[serde(rename_all = "camelCase")]
 pub struct User {
     #[serde(rename = "_id")]
-    pub id: String,
-    pub display_name: String,
+    pub id: Option<String>,
+    pub display_name: Option<String>,
     pub picture: Option<String>,
-    pub hide_me: bool,
-    pub brief: Value,
+    pub hide_me: Option<bool>,
+    pub brief: Option<Value>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EpisodeInfo {
-    pub notes: Value,
-    pub thumbnails: Vec<String>,
-    pub vid_inforssub: VidInforssub,
-    pub upload_dates: UploadDates,
-    pub vid_inforsdub: Value,
-    pub vid_inforsraw: Value,
-    pub description: Value,
+    pub notes: Option<Value>,
+    pub thumbnails: Option<Vec<String>>,
+    pub vid_inforssub: Option<VidInforssub>,
+    pub upload_dates: Option<UploadDates>,
+    pub vid_inforsdub: Option<Value>,
+    pub vid_inforsraw: Option<Value>,
+    pub description: Option<Value>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VidInforssub {
-    pub vid_resolution: i64,
-    pub vid_path: String,
-    pub vid_size: i64,
-    pub vid_duration: f64,
+    pub vid_resolution: Option<i64>,
+    pub vid_path: Option<String>,
+    pub vid_size: Option<i64>,
+    pub vid_duration: Option<f64>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadDates {
-    pub sub: String,
+    pub sub: Option<String>,
+    pub dub: Option<String>,
+    pub raw: Option<String>,
 }

@@ -8,6 +8,7 @@ use base64::Engine;
 use hybrid_array::{ArraySize, typenum};
 use serde_json::json;
 use openssl_sys::EVP_MAC_CTX_new;
+use tokio::io::repeat;
 use urlencoding::encode;
 use curl::easy::{Handler, Easy2, WriteError, ReadError, List};
 
@@ -15,7 +16,7 @@ mod structs;
 
 pub use structs::*;
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum Translation{
     Sub,
     Dub,
@@ -40,8 +41,23 @@ impl Handler for PostHandler{
     }
 }
 
+fn extract_link(episode_link: &str)->Result<String, Box<dyn std::error::Error>>{
+    match episode_link{
+        x if x.contains("repackager.wixmp.com")=>{
+            Ok(String::new())
+        },
+        x if x.contains("master.m3u8")=>{
+            Ok(String::new())
+        },
+        x => {
+            Ok(x.to_string())
+        }
+    }
+}
+
+
 fn get_episode_link(source_id: &str) -> Result<String, Box<dyn std::error::Error>>{
-    todo!("Finish grabbing links for episodes");
+    //todo!("Finish grabbing links for episodes");
     
     let ref_url = "https://youtu-chan.com";
     let api_base =  "allanime.day";
@@ -55,7 +71,7 @@ fn get_episode_link(source_id: &str) -> Result<String, Box<dyn std::error::Error
             };
             let mut handle = Easy2::new(handler);
             handle.referer(ref_url)?;
-            handle.timeout(Duration::from_secs(5));
+            handle.timeout(Duration::from_secs(10))?;
             handle.follow_location(true)?;
             handle.ssl_verify_host(false)?;
             handle.ssl_verify_peer(false)?;
@@ -79,12 +95,19 @@ fn get_episode_link(source_id: &str) -> Result<String, Box<dyn std::error::Error
 
             let contents = handle.get_ref();
             let response =&std::str::from_utf8(&contents.response_data)?;
-            println!("{response}");
+            //println!("{response}");
+            let source_re = regex::Regex::new(r#".*src: "([^"]*)"\s*"#)?;
+            if let Some(caps) = source_re.captures(*response){
+                Ok(format!("{}", &caps[1]))
+            } else {
+                Err("Unable to capture source link".into())
+            }
 
-            Ok(String::new())
+
+            //Ok(String::new())
         },
         x if x.contains("tools.fast4speed.rsvp") =>{
-            let episode_link = format!("Yt >{x}");
+            let episode_link = format!("{x}");
             Ok(episode_link)
 
         },
@@ -124,53 +147,67 @@ fn get_episode_link(source_id: &str) -> Result<String, Box<dyn std::error::Error
 
 
 fn source_init(source_name: &str, source: &SourceUrl)->String{
-    if !&source.source_url.starts_with("--"){
-        return source.source_url.clone()
+    if let Some(source_url) = &source.source_url{
+        if !source_url.starts_with("--"){
+            return source_url.clone()
+        } 
+
+        let payload = &source_url[2..];
+        let mut decoded = String::with_capacity(payload.len()/2);
+
+        let mut chars = payload.chars();
+        while let (Some(c1), Some(c2)) = (chars.next(), chars.next()){
+            let pair: String = format!("{c1}{c2}");
+
+            let mapped_char = match pair.as_str(){
+                "79" => 'A', "7a" => 'B', "7b" => 'C', "7c" => 'D', "7d" => 'E', "7e" => 'F', "7f" => 'G',
+                "70" => 'H', "71" => 'I', "72" => 'J', "73" => 'K', "74" => 'L', "75" => 'M', "76" => 'N',
+                "77" => 'O', "68" => 'P', "69" => 'Q', "6a" => 'R', "6b" => 'S', "6c" => 'T', "6d" => 'U',
+                "6e" => 'V', "6f" => 'W', "60" => 'X', "61" => 'Y', "62" => 'Z',
+                "59" => 'a', "5a" => 'b', "5b" => 'c', "5c" => 'd', "5d" => 'e', "5e" => 'f', "5f" => 'g',
+                "50" => 'h', "51" => 'i', "52" => 'j', "53" => 'k', "54" => 'l', "55" => 'm', "56" => 'n',
+                "57" => 'o', "48" => 'p', "49" => 'q', "4a" => 'r', "4b" => 's', "4c" => 't', "4d" => 'u',
+                "4e" => 'v', "4f" => 'w', "40" => 'x', "41" => 'y', "42" => 'z',
+                "08" => '0', "09" => '1', "0a" => '2', "0b" => '3', "0c" => '4', "0d" => '5', "0e" => '6',
+                "0f" => '7', "00" => '8', "01" => '9',
+                "15" => '-', "16" => '.', "67" => '_', "46" => '~', "02" => ':', "17" => '/', "07" => '?',
+                "1b" => '#', "63" => '[', "65" => ']', "78" => '@', "19" => '!', "1c" => '$', "1e" => '&',
+                "10" => '(', "11" => ')', "12" => '*', "13" => '+', "14" => ',', "03" => ';', "05" => '=',
+                "1d" => '%',
+                _ => ' ',
+            };
+            decoded.push(mapped_char);
+        }
+
+        decoded.replace("/clock", "/clock.json")
+    }else {
+        return String::from("Unable to Parse Url")
     }
-
-    let payload = &source.source_url[2..];
-    let mut decoded = String::with_capacity(payload.len()/2);
-
-    let mut chars = payload.chars();
-    while let (Some(c1), Some(c2)) = (chars.next(), chars.next()){
-        let pair: String = format!("{c1}{c2}");
-
-        let mapped_char = match pair.as_str(){
-            "79" => 'A', "7a" => 'B', "7b" => 'C', "7c" => 'D', "7d" => 'E', "7e" => 'F', "7f" => 'G',
-            "70" => 'H', "71" => 'I', "72" => 'J', "73" => 'K', "74" => 'L', "75" => 'M', "76" => 'N',
-            "77" => 'O', "68" => 'P', "69" => 'Q', "6a" => 'R', "6b" => 'S', "6c" => 'T', "6d" => 'U',
-            "6e" => 'V', "6f" => 'W', "60" => 'X', "61" => 'Y', "62" => 'Z',
-            "59" => 'a', "5a" => 'b', "5b" => 'c', "5c" => 'd', "5d" => 'e', "5e" => 'f', "5f" => 'g',
-            "50" => 'h', "51" => 'i', "52" => 'j', "53" => 'k', "54" => 'l', "55" => 'm', "56" => 'n',
-            "57" => 'o', "48" => 'p', "49" => 'q', "4a" => 'r', "4b" => 's', "4c" => 't', "4d" => 'u',
-            "4e" => 'v', "4f" => 'w', "40" => 'x', "41" => 'y', "42" => 'z',
-            "08" => '0', "09" => '1', "0a" => '2', "0b" => '3', "0c" => '4', "0d" => '5', "0e" => '6',
-            "0f" => '7', "00" => '8', "01" => '9',
-            "15" => '-', "16" => '.', "67" => '_', "46" => '~', "02" => ':', "17" => '/', "07" => '?',
-            "1b" => '#', "63" => '[', "65" => ']', "78" => '@', "19" => '!', "1c" => '$', "1e" => '&',
-            "10" => '(', "11" => ')', "12" => '*', "13" => '+', "14" => ',', "03" => ';', "05" => '=',
-            "1d" => '%',
-            _ => ' ',
-        };
-        decoded.push(mapped_char);
-    }
-
-    decoded.replace("/clock", "/clock.json")
+    
 }
 
 
-pub fn generate_link(source: &SourceUrl){
-    match source.source_name.as_str(){
-        "Mp4" =>{
-            let source_id = source_init("mp4upload", source);
-            println!("{source_id}");
-            get_episode_link(&source_id);
-        },
-        "Fm-Hls" => {},
-        "Yt-mp4" => {},
-        "S-mp4" => {},
-        _ => {}
+pub fn generate_link(source: &SourceUrl) -> Result<String, Box<dyn std::error::Error>>{
+    if let Some(source_name) = &source.source_name{
+        match source_name.as_str(){
+            "Mp4" =>{
+                let source_id = source_init("mp4upload", source);
+                println!("{source_id}");
+                let episode_link = get_episode_link(&source_id)?;
+                Ok(episode_link)
+            },
+            "Fm-Hls" => {
+                let source_id = source_init("Filemoon", source);
+                Ok(String::new())
+            },
+            "Yt-mp4" => {Ok(String::new())},
+            "S-mp4" => {Ok(String::new())},
+            _ => {Ok(String::new())}
+        }
+    } else {
+        Err("Unable to get Source Name".into())
     }
+
 }
 
 
@@ -222,7 +259,7 @@ fn process_response(url_data: &episodes::URLData, key: &str)-> Result<episode_so
 
     let response = String::from_utf8(encrypted_buffer.to_vec())?;
 
-    println!("{response}");
+    dbg!(&response);
     let response_json: episode_source::Root= serde_json::from_str(&response)?;
     Ok(response_json)
 }
@@ -308,18 +345,40 @@ fn post_curl(payload: String) ->Result<String, Box<dyn std::error::Error>>{
 
 
 
-pub fn get_shows() -> Result<Vec<Edge>, Box<dyn std::error::Error>>{
+pub fn get_shows(show: &String, translation_type: &Translation) -> Result<Vec<Edge>, Box<dyn std::error::Error>>{
 
     let search_gql="query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } }}";
+    
 
-    let payload = format!("{{\"variables\":{{\"search\":{{\"allowAdult\":true,\"allowUnknown\":false,\"query\":\"yani neko\"}},\"limit\":40,\"page\":1,\"translationType\":\"sub\",\"countryOrigin\":\"ALL\"}},\"query\":\"{search_gql}\"}}");
+    let payload = json!({
+        "variables" :{
+            "search": {
+                "allowAdult" : true,
+                "allowUnknown" : false,
+                "query" : show
+            },
+            "limit" : 40,
+            "page" : 1,
+            "translationType" : match translation_type {
+                Translation::Sub => "sub",
+                Translation::Dub => "dub",
+                Translation::Raw => "raw"
+            },
+            "countryOrigin" : "ALL"
+        },
+        "query" : search_gql
+    }).to_string();
+    
+    dbg!(&payload);
+
+    //format!("{{\"variables\":{{\"search\":{{\"allowAdult\":true,\"allowUnknown\":false,\"query\":\"{show}\"}},\"limit\":40,\"page\":1,\"translationType\":\"{translation_type}\",\"countryOrigin\":\"ALL\"}},\"query\":\"{search_gql}\"}}");
 
     let response = post_curl(payload)?;
     // let json: Value = serde_json::from_str(&response)?; 
     // println!("Response Body: {json:?}");
 
     let data:shows::Root = serde_json::from_str(&response)?;
-    println!("Response Body: {data:?}");
+    dbg!(&data);
 
     
     Ok(data.data.shows.edges)
@@ -418,8 +477,17 @@ pub fn get_episode_url(show_id: &String, translation_type: &String,  episode_num
     //     let
     // } else {
     let response = process_response(&root.data, key)?;
-    let source_urls = response.episode.source_urls;
-    Ok(source_urls)
+    if let Some(episode) = response.episode{
+        if let Some(source_url) = episode.source_urls{
+            Ok(source_url)
+        } else {
+            Err("Unable to get source Urls".into())
+        }
+        
+    } else {
+        Err("Unable to get Episode Information".into())
+    }
+   
 //}
 
 }
