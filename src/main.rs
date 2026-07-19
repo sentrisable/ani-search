@@ -54,7 +54,8 @@ struct Main{
     show_info: animeschedule::Anime,
     selected_show: Edge,
     selected_episode: String,
-    selected_episode_urls: Vec<episode_source::SourceUrl>,
+    selected_episode_urls: Vec<(String,Vec<(i32,String)>)>,
+    //selected_episode_urls: Vec<episode_source::SourceUrl>,
     tx: Sender<String>,
     rx: Receiver<String>,
 }
@@ -230,13 +231,19 @@ let selected_states = vec![false; self.shows.clone().len()];
                                             ui.label("Sources: ");
                                             let selected_url = vec![false; self.selected_episode_urls.clone().len()];
                                             for (i,url) in self.selected_episode_urls.clone().iter().enumerate(){
-                                                if let Some(source_name) = &url.source_name{
+                                                let source_name = &url.0;
                                                     match source_name.as_str(){
-                                                        //| "Fm-Hls" | "S-mp4" | "Yt-mp4" will add later once I get them set up
-                                                        "Mp4" => {
+                                                        // will add later once I get them set up
+                                                        "Mp4"| "Fm-Hls" | "S-mp4" | "Yt-mp4" => {
                                                             
-                                                            if ui.selectable_label(selected_url[i], source_name).clicked(){
-                                                                if let Ok(episode_link)=generate_link(&url){
+                                                            if ui.selectable_label(selected_url[i], match source_name.as_str(){
+                                                                "Mp4" =>  "Mp4Upload",
+                                                                "Fm-Hls" => "Filemoon",
+                                                                "S-mp4" => "Sharepoint", 
+                                                                "Yt-mp4" => "Yt",
+                                                                _=> "No Source available"
+                                                            }).clicked(){
+                                                                let episode_link = &url.1[0].1;
                                                                     let media_title_arg = format!("--force-media-title=\"{}\": Episode {}", self.selected_show.name, self.selected_episode);
                                                                     let mut refer_flag_arg = String::new();
                                                                     match source_name.as_str() {
@@ -245,15 +252,13 @@ let selected_states = vec![false; self.shows.clone().len()];
 
                                                                     }
                                                                     let spawn_player = process::Command::new("mpv").arg("--tls-verify=no").arg(media_title_arg).arg(refer_flag_arg).arg(episode_link).spawn();
-                                                                }
+                                                                
                                                             }
                                                             ui.separator();
                                                         },
                                                         _=>{}
                                                     }
-                                                } else {
-                                                    todo!("Handle Error Logging")
-                                                }
+                                                
                                                 
                                                     
                                                     //

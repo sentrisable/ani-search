@@ -41,22 +41,87 @@ impl Handler for PostHandler{
     }
 }
 
-fn extract_link(episode_link: &str)->Result<String, Box<dyn std::error::Error>>{
+
+fn get_filemoon_link(){
+    
+}
+
+fn extract_link(episode_link: &str, response: &str)->Result<Vec<(i32, String)>, Box<dyn std::error::Error>>{
+    use regex::Regex;
     match episode_link{
         x if x.contains("repackager.wixmp.com")=>{
-            Ok(String::new())
+            let extracted_link = x.replace("repackager.wixmp.com/", "").split(".urlset").next().unwrap_or("").to_string();
+            let re = Regex::new(r".*/,[^/],/mp4.*").unwrap();
+
+            let mut output: Vec<(i32, String)> = Vec::new();
+
+            if let Some(caps) = re.captures(x){
+                let csv_group = &caps[1];
+                for j in csv_group.split(','){
+                    if j.is_empty(){continue;}
+                    let formatted_line = format!("{} > {}", j , extracted_link).replace(",[^/]*", j);
+                    let numeric_key:i32 = j.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse()?;
+                    output.push((numeric_key, formatted_line));
+                }
+
+            }
+            output.sort_by(|a,b| b.0.cmp(&a.0));
+            Ok(output)
         },
         x if x.contains("master.m3u8")=>{
-            Ok(String::new())
+            let re = Regex::new(r#"Referer":"([^"]*)""#)?;
+            let m3u8_refr = re.captures(response).map(|caps| caps[1].to_string()).unwrap_or_default();
+            println!("{x}");
+            let first_line = x.lines().next().unwrap_or("");
+            let extract_link = first_line.split('>').nth(1).unwrap_or("");
+            let relative_link = match extract_link.rfind('/'){
+                Some(idx) => {
+                    &x[..idx+1]
+                },
+                None=> "",
+            };
+
+            let payload = String::new();
+            let handler = PostHandler{
+                upload_data: payload.clone(),
+                response_data: Vec::new()
+            };
+            let mut handle = Easy2::new(handler);
+            handle.referer(&m3u8_refr)?;
+
+            let mut headers = List::new();
+            headers.append("Content-Type: application/json")?;
+            handle.http_headers(headers)?;
+            
+            //handle.post(true)?;
+            //handle.post_field_size(payload.clone().as_bytes().len() as u64)?;
+            
+            
+            handle.url(&extract_link)?;
+
+            handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
+
+            #[cfg(debug_assertions)]
+            handle.verbose(true)?;
+
+            handle.perform()?;
+            
+
+            let contents = handle.get_ref();
+            let response =&std::str::from_utf8(&contents.response_data)?;
+            println!("{response}");
+
+            Ok(Vec::new())
         },
         x => {
-            Ok(x.to_string())
+            let link_vec = vec![(0, x.to_string())];
+            Ok(link_vec)
         }
     }
 }
 
 
-fn get_episode_link(source_id: &str) -> Result<String, Box<dyn std::error::Error>>{
+fn get_episode_link(source_id: &str) -> Result<Vec<(i32, String)>, Box<dyn std::error::Error>>{
     //todo!("Finish grabbing links for episodes");
     
     let ref_url = "https://youtu-chan.com";
@@ -88,7 +153,8 @@ fn get_episode_link(source_id: &str) -> Result<String, Box<dyn std::error::Error
 
             handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
 
-            dbg!(handle.verbose(true)?);
+            #[cfg(debug_assertions)]
+            handle.verbose(true)?;
 
             handle.perform()?;
             
@@ -98,7 +164,9 @@ fn get_episode_link(source_id: &str) -> Result<String, Box<dyn std::error::Error
             //println!("{response}");
             let source_re = regex::Regex::new(r#".*src: "([^"]*)"\s*"#)?;
             if let Some(caps) = source_re.captures(*response){
-                Ok(format!("{}", &caps[1]))
+                let links = extract_link(&caps[1], "")?;
+                println!("{links:?}");
+                Ok(links)
             } else {
                 Err("Unable to capture source link".into())
             }
@@ -107,7 +175,7 @@ fn get_episode_link(source_id: &str) -> Result<String, Box<dyn std::error::Error
             //Ok(String::new())
         },
         x if x.contains("tools.fast4speed.rsvp") =>{
-            let episode_link = format!("{x}");
+            let episode_link = vec![(0, x)];
             Ok(episode_link)
 
         },
@@ -132,15 +200,21 @@ fn get_episode_link(source_id: &str) -> Result<String, Box<dyn std::error::Error
 
             handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
 
-            dbg!(handle.verbose(true)?);
+            #[cfg(debug_assertions)]
+            handle.verbose(true)?;
 
             handle.perform()?;
             
 
             let contents = handle.get_ref();
             let response =&std::str::from_utf8(&contents.response_data)?;
+            let root: episode_links::Root = serde_json::from_str(response)?;
+
+
+            let links = extract_link(&root.links[0].link, response)?;
+            
             //Ok(response.clone())
-            Ok(String::new())
+            Ok(links)
         }
     }
 }
@@ -187,22 +261,35 @@ fn source_init(source_name: &str, source: &SourceUrl)->String{
 }
 
 
-pub fn generate_link(source: &SourceUrl) -> Result<String, Box<dyn std::error::Error>>{
+pub fn generate_link(source: &SourceUrl) -> Result<Vec<(i32, String)>, Box<dyn std::error::Error>>{
     if let Some(source_name) = &source.source_name{
         match source_name.as_str(){
             "Mp4" =>{
                 let source_id = source_init("mp4upload", source);
-                println!("{source_id}");
                 let episode_link = get_episode_link(&source_id)?;
+
+                dbg!(&episode_link);
                 Ok(episode_link)
             },
             "Fm-Hls" => {
                 let source_id = source_init("Filemoon", source);
-                Ok(String::new())
-            },
-            "Yt-mp4" => {Ok(String::new())},
-            "S-mp4" => {Ok(String::new())},
-            _ => {Ok(String::new())}
+                Ok(Vec::new())
+                },
+            "Yt-mp4" => {
+                let source_id = source_init("youtube", source);
+                let episode_link = get_episode_link(&source_id)?;
+
+                dbg!(&episode_link);
+                Ok(episode_link)
+                },
+            "S-mp4" => {
+                let source_id = source_init("sharepoint", source);
+                let episode_link = get_episode_link(&source_id)?;
+                
+                dbg!(&episode_link);
+                Ok(episode_link)
+                },
+                _ => {Ok(Vec::new())}      
         }
     } else {
         Err("Unable to get Source Name".into())
@@ -333,7 +420,8 @@ fn post_curl(payload: String) ->Result<String, Box<dyn std::error::Error>>{
 
     handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
 
-    dbg!(handle.verbose(true)?);
+    #[cfg(debug_assertions)]
+    handle.verbose(true)?;
 
     handle.perform()?;
     
@@ -401,7 +489,7 @@ pub fn get_episode_list(show_id: &String) -> Result<episodes::AvailableEpisodesD
 
 }
 
-pub fn get_episode_url(show_id: &String, translation_type: &String,  episode_num: &String)->Result<Vec<episode_source::SourceUrl>, Box<dyn std::error::Error>>{
+pub fn get_episode_url(show_id: &String, translation_type: &String,  episode_num: &String)->Result<Vec<(String,Vec<(i32,String)>)>, Box<dyn std::error::Error>>{
 
     let episode_embed_gql="query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls }}";
     
@@ -479,7 +567,18 @@ pub fn get_episode_url(show_id: &String, translation_type: &String,  episode_num
     let response = process_response(&root.data, key)?;
     if let Some(episode) = response.episode{
         if let Some(source_url) = episode.source_urls{
-            Ok(source_url)
+            let mut urls:Vec<(String,Vec<(i32,String)>)> = Vec::new();
+            for url in source_url{
+                let source_name = match &url.source_name{
+                    Some(source) => source,
+                    None => "No Source available"
+                };
+                dbg!(&source_name);
+                let episode_link = generate_link(&url)?;
+                urls.push((source_name.to_string(), episode_link));
+                
+            }
+            Ok(urls)
         } else {
             Err("Unable to get source Urls".into())
         }
