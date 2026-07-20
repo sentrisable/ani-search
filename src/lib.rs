@@ -1,11 +1,15 @@
 use std::{
-    error::Error, io::{Read, Write, stdout}, process::Command, string, sync::mpsc::{Receiver, Sender}, time::Duration
+    path::*,
+    error::Error, 
+    fs, io::{Read, Write, stdout}, process::Command, string, sync::mpsc::{Receiver, Sender}, time::Duration
 
 };
 
 
 use base64::Engine;
+use egui::Key::V;
 use hybrid_array::{ArraySize, typenum};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use openssl_sys::EVP_MAC_CTX_new;
 use tokio::io::repeat;
@@ -13,8 +17,54 @@ use urlencoding::encode;
 use curl::easy::{Handler, Easy2, WriteError, ReadError, List};
 
 mod structs;
+mod apis;
 
 pub use structs::*;
+pub use apis::*;
+
+
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct AppSettings{
+    
+    pub allow_adult: bool,
+    pub initialized: bool,
+}
+
+pub struct SettingsIter<'a>{
+    setting: &'a AppSettings,
+    state: usize,
+}
+
+impl AppSettings{
+    pub fn iter(&self) -> SettingsIter{
+        SettingsIter { setting: self, state: 0}
+    }
+}
+
+impl<'a> Iterator for SettingsIter<'a>{
+    type Item = (&'static str, bool);
+
+    fn next(&mut self) -> Option<Self::Item>{
+        let result = match self.state{
+            0 => Some(("Allow Adult", self.setting.allow_adult)),
+            _ => None,
+        };
+        self.state += 1;
+        result
+    }
+}
+
+
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Config{
+    pub app_settings: AppSettings,
+    pub anilist: AnilistVariables,
+}
+
+
+
+
+
 
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub enum Translation{
@@ -24,7 +74,7 @@ pub enum Translation{
 }
 
 
-struct PostHandler{
+pub struct PostHandler{
     upload_data: String,
     response_data: Vec<u8>
 }
@@ -41,9 +91,67 @@ impl Handler for PostHandler{
     }
 }
 
+pub enum MessageType{
+    Error,
+    Informational
+}
 
-fn get_filemoon_link(){
+pub fn write_to_log(message: &str, message_type:MessageType)->Result<(), Box<dyn std::error::Error>>{
+    #[cfg(target_os="linux")]
+    let path = "./logs/errors.log";
     
+    #[cfg(target_os="windows")]
+    let path = ".\\logs\\errors.log";
+
+    let mut log = std::fs::OpenOptions::new().append(true).create(true).open(path)?;
+    match message_type{
+        MessageType::Error =>{
+            log.write_all(format!("ERROR: {} - {}", message, chrono::Local::now()).as_bytes())?;
+        },
+        MessageType::Informational=>{
+            log.write_all(format!("INFO: {} - {}", message, chrono::Local::now()).as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
+
+pub fn create_file(path: &str) ->Result<(), Box<dyn std::error::Error>>{
+    if !std::path::Path::new(path).exists(){
+        write_to_log(format!("Creating {path}...").as_str(), MessageType::Informational);
+        fs::File::create_new(path)?;
+        write_to_log(format!("{path} created.").as_str(), MessageType::Informational);
+    }else {
+        let message = format!("{path} already exists");
+        write_to_log(&message, MessageType::Error);
+    }
+    Ok(())
+}
+
+fn get_filemoon_link(source_id: &str) -> Result<(), Box<dyn std::error::Error>>{
+    let payload = String::new();
+        let handler = PostHandler{
+            upload_data: payload.clone(),
+            response_data: Vec::new()
+        };
+        let mut handle = Easy2::new(handler);
+        handle.referer("https://youtu-chan.com")?;
+        dbg!(&source_id);
+        let url = format!("https://allanime.day");
+        handle.url(&url)?;
+
+        handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
+
+        #[cfg(debug_assertions)]
+        handle.verbose(true)?;
+
+        handle.perform()?;
+        
+
+        let contents = handle.get_ref();
+        let response =&std::str::from_utf8(&contents.response_data)?;
+        println!("{response}");    
+        Ok(())
 }
 
 fn extract_link(episode_link: &str, response: &str)->Result<Vec<(i32, String)>, Box<dyn std::error::Error>>{
@@ -271,10 +379,11 @@ pub fn generate_link(source: &SourceUrl) -> Result<Vec<(i32, String)>, Box<dyn s
                 dbg!(&episode_link);
                 Ok(episode_link)
             },
-            "Fm-Hls" => {
-                let source_id = source_init("Filemoon", source);
-                Ok(Vec::new())
-                },
+            // "Fm-Hls" => {
+            //     let source_id = source_init("Filemoon", source);
+            //     get_filemoon_link(source_id.as_str());
+            //     Ok(Vec::new())
+            //     },
             "Yt-mp4" => {
                 let source_id = source_init("youtube", source);
                 let episode_link = get_episode_link(&source_id)?;
@@ -433,7 +542,7 @@ fn post_curl(payload: String) ->Result<String, Box<dyn std::error::Error>>{
 
 
 
-pub fn get_shows(show: &String, translation_type: &Translation) -> Result<Vec<Edge>, Box<dyn std::error::Error>>{
+pub fn get_shows(show: &String, translation_type: &Translation, config: &Config) -> Result<Vec<Edge>, Box<dyn std::error::Error>>{
 
     let search_gql="query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } }}";
     
@@ -441,7 +550,7 @@ pub fn get_shows(show: &String, translation_type: &Translation) -> Result<Vec<Ed
     let payload = json!({
         "variables" :{
             "search": {
-                "allowAdult" : true,
+                "allowAdult" : &config.app_settings.allow_adult,
                 "allowUnknown" : false,
                 "query" : show
             },
@@ -493,9 +602,9 @@ pub fn get_episode_url(show_id: &String, translation_type: &String,  episode_num
 
     let episode_embed_gql="query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls }}";
     
-    let epoch = 4130;
-    let build_id = 41;
-    let key = "cf4777b5778aeadc9449e12769ea545d00c43cd8ff65d482364586cde204f359";
+    let epoch = 6884;
+    let build_id = 50;
+    let key = "f34fa715e2958b8c1ebc6efa4d089acd8f196d8b83d4b6201586c00c8a52e4a8";
     let query_hash = "d405d0edd690624b66baba3068e0edc3ac90f1597d898a1ec8db4e5c43c00fec";
     
 
@@ -521,7 +630,7 @@ pub fn get_episode_url(show_id: &String, translation_type: &String,  episode_num
     let payload = format!("variables={}&extensions={}", encode(&query_vars), encode(&query_ext));
     dbg!(&payload);
 
-    let ref_url = "https://youtu-chan.com";
+    let ref_url = "https://mkissa.to";
     let api_base =  "allanime.day";
     let api_url = format!("https://api.{}", api_base);
 
@@ -627,4 +736,75 @@ pub fn get_next_episode_release(shows: &Edge) -> Result<animeschedule::Anime, Bo
     let show_info = data.anime[0].clone();
     //Ok(response.clone())
      Ok(show_info)
+}
+
+
+
+pub fn get_config() ->Result<Config, Box<dyn std::error::Error>>{
+    let variables = load_setting_file();
+
+    match variables{
+        Ok(v) =>{
+            if v.is_empty(){
+                let config: Config = Config::default();
+                Ok(config)
+            } else {
+                if let Ok(values) = toml::from_str(&v){
+                    let config: Config = values;
+                    Ok(config)
+                } else {
+                    Err("Unable to deserialize settings".into())
+                }
+            }
+        },
+        Err(e)=>Err(e.into())
+    }
+}
+
+
+pub fn update_settings(config: &Config){
+    #[cfg(target_os="windows")]
+    let path = ".\\Settings.toml";
+    
+    #[cfg(target_os="linux")]
+    let path = "./Settings.toml";
+
+    if let Ok(toml_string) = toml::to_string(&config){
+        
+        if let Ok(mut file) = std::fs::OpenOptions::new().write(true).truncate(true).open(path)
+        {
+            file.write_all(&toml_string.as_bytes());
+
+        } else {
+            write_to_log("Unable to write to Settings.toml", MessageType::Error);
+        }
+    } else {
+        write_to_log("Unable to Serialize Variables", MessageType::Error);
+    }
+}
+
+pub fn load_setting_file()->Result<String, Box<dyn std::error::Error>>{
+    #[cfg(target_os="windows")]
+    let file = ".\\Settings.toml";
+    
+    #[cfg(target_os="linux")]
+    let file = "./Settings.toml";
+
+    create_file(file);
+
+    match std::fs::File::open(file){
+        Ok(settings) =>{
+            match fs::read_to_string(file){
+                Ok(contents) => {
+                    Ok(contents)
+                }, 
+                Err(e) => Err(e.into())
+            }
+            
+        },
+        Err(e) => Err(e.into())
+    }
+
+    
+
 }

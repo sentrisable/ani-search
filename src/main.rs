@@ -1,15 +1,17 @@
 use std::{time::Duration, sync::{mpsc::{Receiver, Sender}, Arc, Mutex}, task, process};
 
-use eframe::egui;
+use eframe::{egui, wgpu::rwh::RawDisplayHandle::UiKit};
 
 use egui::{ComboBox};
+
+use egui_extras::{Column, TableBuilder};
+
 use tokio::runtime::Runtime;
 
 
 use ani_search::{
-    AvailableEpisodes, Edge, Translation, animeschedule, episode_source, episodes, generate_link, get_episode_list, get_episode_url, get_next_episode_release, get_shows,
+    AnilistVariables, AppSettings, AvailableEpisodes, Config, Edge, Translation, anilist, anilist_shows, animeschedule, check_credentials, episode_source, episodes, generate_link, get_config, get_episode_list, get_episode_url, get_next_episode_release, get_shows, search_anilist, update_settings, write_to_log,
 
-    
 };
 
 fn main() {
@@ -28,9 +30,25 @@ fn main() {
     eframe::run_native("AniSearch", native_options, Box::new(|cc| Ok(Box::new(Main::new(cc)))));
 }
 
+#[derive(Debug, PartialEq)]
+enum SearchProvider{
+    AllAnime,
+    Anilist
+}
+
+impl Default for SearchProvider{
+    fn default() -> Self {
+        Self::Anilist
+    }
+}
+
 enum Pages{
+    Init,
     Main,
     Show,
+    APIAuth,
+    Settings,
+    Anilist
 }
 
 impl Pages{
@@ -43,10 +61,17 @@ impl Pages{
 
 }
 
-
+#[derive(Debug, Default)]
+struct Player{
+    spawned: bool,
+    process_id: u32
+}
 
 struct Main{
+    config: Config,
     pages: Pages,
+    provider: SearchProvider,
+
     anime: String,
     translation: Translation,
     shows: Vec<Edge>,
@@ -55,7 +80,9 @@ struct Main{
     selected_show: Edge,
     selected_episode: String,
     selected_episode_urls: Vec<(String,Vec<(i32,String)>)>,
-    //selected_episode_urls: Vec<episode_source::SourceUrl>,
+    player: Player,
+
+    anilist_info: anilist_shows::MediaListCollection,
     tx: Sender<String>,
     rx: Receiver<String>,
 }
@@ -64,7 +91,10 @@ impl Default for Main{
     fn default() -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         Self {
-            pages: Pages::Main,
+            config: Config::default(),
+            pages: Pages::Init,
+            provider: SearchProvider::default(),
+
             anime: Default::default(),
             translation: Translation::Sub,
             shows: Vec::new(),
@@ -72,8 +102,11 @@ impl Default for Main{
             selected_show: Edge::default(),
             selected_episode: Default::default(),
             selected_episode_urls: Vec::new(),
-
             episode_list: episodes::AvailableEpisodesDetail::default(),
+            player: Player::default(),
+
+            anilist_info: anilist_shows::MediaListCollection::default(),
+
             tx, 
             rx 
         }
@@ -88,28 +121,95 @@ impl Main{
 
 impl eframe::App for Main{
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
+        
+        
+        // if self.config.app_settings.initialized == false{    
+        //     self.config.app_settings.initialized = true;
+        //     update_settings(&self.config);
+            
+        // }
+
+        
+        egui::MenuBar::new().ui(ui, |ui|{
+            ui.separator();
+            ui.menu_button("File", |ui|{
+                if ui.button("Settings").clicked(){
+                    self.pages = Pages::Settings;
+                }
+                if ui.button("Quit").clicked(){
+                    ui.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            ui.separator();
+            ui.menu_button("Anilist", |ui|{
+                if ui.button("Get Auth token").clicked(){
+                    self.pages = Pages::APIAuth;
+                }
+
+                ui.add_enabled_ui(!&self.config.anilist.token.is_empty(), |ui|{
+                    if ui.button("My Anilist").clicked(){
+                        self.pages = Pages::Anilist;
+                        if let Ok(info) = anilist::get_anime_from_list(self.config.anilist.user_id, &self.config.anilist.token){
+                            self.anilist_info = info;
+                        }
+                    }
+                })
+            })
+        });
+
         egui::CentralPanel::default().show(ui, |ui| match self.pages{
+            
+            Pages::Init=>{
+                egui_extras::install_image_loaders(ui.ctx());
+                if self.config.app_settings.initialized == false{
+                    if let Ok(config) = get_config(){
+                        self.config = config;
+                        self.config.app_settings.initialized = true;
+                        update_settings(&self.config);
+                    }   
+                }
+                self.pages = Pages::Main;
+
+            }
             Pages::Main => {
                 ui.horizontal(|ui|{
-                    ui.add(egui::TextEdit::singleline(&mut self.anime).hint_text("Search for show..."));
-                    
-                    ComboBox::new("translation", "Translation Type").selected_text(format!("{:?}", self.translation)).show_ui(ui, |ui|{
+                    let search_bar = ui.add(egui::TextEdit::singleline(&mut self.anime).hint_text("Search for show..."));
+                    ComboBox::new("provider", "Search Provider").selected_text(format!("{:?}", self.provider)).show_ui(ui, |ui|{
+                            ui.selectable_value(&mut self.provider, SearchProvider::Anilist, "Anilist");
+                            ui.selectable_value(&mut self.provider, SearchProvider::AllAnime, "AllAnime");
+                        
+                    });
+                    match self.provider{
+                        SearchProvider::Anilist => {
+                            if ui.button("Search").clicked() || (search_bar.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))){
+                                search_anilist(&self.anime, &self.config);
+                            
+                            
+                            }
+                        },
+                        SearchProvider::AllAnime => {
+                        ComboBox::new("translation", "Translation Type").selected_text(format!("{:?}", self.translation)).show_ui(ui, |ui|{
                             ui.selectable_value(&mut self.translation, Translation::Sub, "Sub");
                             ui.selectable_value(&mut self.translation, Translation::Dub, "Dub");
                             ui.selectable_value(&mut self.translation, Translation::Raw, "Raw");
                         }
+                        
                     );
-                    
-                    if ui.button("Search").clicked(){
-                        if let Ok(shows) = get_shows(&self.anime, &self.translation){
+                    if ui.button("Search").clicked() || (search_bar.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))){
+                        if let Ok(shows) = get_shows(&self.anime, &self.translation, &self.config){
                             self.shows = shows.clone();
+                        }  
+                    }
+                    
                         }
                     }
+                    
+                    
                 });
 
                 if !self.shows.is_empty(){
                     egui::ScrollArea::vertical().id_salt("show_list").show(ui, |ui|{
-let selected_states = vec![false; self.shows.clone().len()];
+                    let selected_states = vec![false; self.shows.clone().len()];
 
                     for (i,show) in self.shows.iter().enumerate()
                     {
@@ -251,7 +351,22 @@ let selected_states = vec![false; self.shows.clone().len()];
                                                                         _ => ()
 
                                                                     }
-                                                                    let spawn_player = process::Command::new("mpv").arg("--tls-verify=no").arg(media_title_arg).arg(refer_flag_arg).arg(episode_link).spawn();
+                                                                    if self.player.spawned == true && self.player.process_id > 0{
+                                                                        #[cfg(unix)]
+                                                                        match process::Command::new("kill").args(&["-9", &self.player.process_id.to_string()]).output(){
+                                                                            Ok(process) => () ,
+                                                                            Err(e) => ()
+                                                                        };   
+                                                                        
+                                                                    }
+                                                                    match process::Command::new("mpv").arg("--tls-verify=no").arg(media_title_arg).arg(refer_flag_arg).arg(episode_link).spawn(){
+                                                                        Ok(spawned) => {
+                                                                            self.player.spawned= true;
+                                                                            self.player.process_id = spawned.id();
+                                                                            
+                                                                        },
+                                                                        Err(e) => {dbg!(e); ()}
+                                                                    }
                                                                 
                                                             }
                                                             ui.separator();
@@ -278,6 +393,10 @@ let selected_states = vec![false; self.shows.clone().len()];
                                     }
                                }
                                
+                            }
+
+                            if self.player.spawned == true{
+                                ui.label(format!("Now Playing Episode {}.", self.selected_episode));
                             }
                         } else {
                             ui.label("No available episodes for selected translation.");
@@ -327,7 +446,134 @@ let selected_states = vec![false; self.shows.clone().len()];
                 //     ui.label(format!("Now playing episode {} of {}", self.selected_episode, self.selected_show.name));
                 // }
                 
+            },
+            Pages::APIAuth =>{
+                ui.heading("API Authorization");
+                ui.label("Connect your accounts to ani-search for syncronized viewing.");
+                ui.label("Currently supported: Anilist");
+
+                ui.separator();
+
+                ui.horizontal(|ui|{
+                    ui.label("Please");
+                    ui.hyperlink_to("request and AniList Auth Token", "https://anilist.co/api/v2/oauth/authorize?client_id=9857&response_type=token");
+                    ui.label("and paste the token in the below section: ");
+                });
+                
+
+                egui::ScrollArea::both().id_salt("auth_token").max_height(300.0).show(ui, |ui|{
+                    ui.add(egui::TextEdit::multiline(&mut self.config.anilist.token).desired_width(300.0)
+                    .hint_text("Access Token..."));
+                });
+                //dbg!(&self.config.anilist.token);
+                
+                if ui.button("Submit").clicked(){
+                    
+                    match check_credentials(&self.config.anilist.token){
+                        Ok(id) => self.config.anilist.user_id = id,
+                        Err(_) => {write_to_log("Unable to get User ID",ani_search::MessageType::Error); }
+                    }
+                    update_settings(&self.config);
+                    self.pages = Pages::Main;
+                }
+
+            },
+            Pages::Settings => {
+                ui.heading("AniSearch Settings");
+                ui.separator();
+                //dbg!(&self.config.app_settings);
+                
+                egui::Grid::new("settings")
+                .num_columns(2)
+                .spacing([40.0, 10.0])
+                .show(ui, |ui| {
+                    
+                    ui.label(format!("Allow Adult"));
+                    ui.add(egui::Checkbox::without_text(&mut self.config.app_settings.allow_adult));
+                    ui.end_row();
+                    
+                    
+                            
+                        
+                    });
+                            
+
+
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui|{
+                    ui.horizontal(|ui|{
+                        if ui.button("Save").clicked(){
+                            update_settings(&self.config);
+                            self.pages = Pages::Main;
+                        }
+                        if ui.button("Apply").clicked(){
+                            update_settings(&self.config);
+                        }
+                        
+                    });
+                    
+                });
+            },
+            Pages::Anilist => {
+                let user = &self.anilist_info.user;
+                ui.horizontal(|ui|{
+                    ui.heading(format!("{}'s Anilist Information", user.name));
+                    ui.image(&user.avatar.large);
+                });
+
+                ui.separator();
+
+                let media_list = &self.anilist_info.lists;
+                
+                
+                for item in media_list{
+                    match item.name.to_lowercase().as_str() {
+                        "watching" => {
+                            egui::CollapsingHeader::new("Watching").id_salt("watching").show(ui, |ui| {
+                                
+                                egui::ScrollArea::vertical().id_salt("watching_scroll").max_height(250.0).show(ui, |ui|{
+                                    let selected_state = vec![false; item.entries.len()]; 
+                                    for (i,show) in item.entries.clone().into_iter().enumerate(){
+                                        if let Some(title) = &show.media.title.english{
+                                            ui.selectable_label(selected_state[i], title);
+                                            
+                                        }
+                                }
+                                });
+                                
+                            });
+                        },
+                        "planning" => {
+                            egui::CollapsingHeader::new("Planning").id_salt("Planning").show(ui, |ui| {
+                                egui::ScrollArea::vertical().id_salt("watching_scroll").max_height(250.0).show(ui, |ui|{
+                                    let selected_state = vec![false; item.entries.len()]; 
+                                    for (i,show) in item.entries.clone().into_iter().enumerate(){
+                                        if let Some(title) = &show.media.title.english{
+                                            ui.selectable_label(selected_state[i], title);
+                                            
+                                        }
+                                }
+                                });
+                            });
+                        },
+                        "completed" => {
+                            egui::CollapsingHeader::new("Completed").id_salt("Completed").show(ui, |ui| {
+                                egui::ScrollArea::vertical().id_salt("watching_scroll").max_height(250.0).show(ui, |ui|{
+                                    let selected_state = vec![false; item.entries.len()]; 
+                                    for (i,show) in item.entries.clone().into_iter().enumerate(){
+                                        if let Some(title) = &show.media.title.english{
+                                            ui.selectable_label(selected_state[i], title);
+                                            
+                                        }
+                                }
+                                });
+                            });
+                        },
+                         _=> ()
+                    }    
+                }
+                
             }
+
             
             
         });
