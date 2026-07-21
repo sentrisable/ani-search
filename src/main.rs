@@ -2,7 +2,7 @@ use std::{time::Duration, sync::{mpsc::{Receiver, Sender}, Arc, Mutex}, task, pr
 
 use eframe::{egui, wgpu::rwh::RawDisplayHandle::UiKit};
 
-use egui::{ComboBox};
+use egui::{ComboBox, TextBuffer};
 
 use egui_extras::{Column, TableBuilder};
 
@@ -10,13 +10,15 @@ use tokio::runtime::Runtime;
 
 
 use ani_search::{
-    AnilistVariables, AppSettings, AvailableEpisodes, Config, Edge, Translation, anilist, anilist_shows, animeschedule, check_credentials, episode_source, episodes, generate_link, get_config, get_episode_list, get_episode_url, get_next_episode_release, get_shows, search_anilist, update_settings, write_to_log,
+    AnilistVariables, AppSettings, AvailableEpisodes, Config, Edge, Translation, anilist, anilist_search_shows, anilist_user_shows, animeschedule, check_credentials, compare_names, episode_source, episodes, generate_link, get_config, get_episode_list, get_episode_url, get_next_episode_release, get_shows, search_anilist, update_settings, write_to_log,
 
 };
 
 fn main() {
     let rt = Runtime::new().expect("Unable to create Runtime");
     let _enter = rt.enter();
+
+    
     
     std::thread::spawn(move || {
         rt.block_on(async {
@@ -41,7 +43,7 @@ impl Default for SearchProvider{
         Self::Anilist
     }
 }
-
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum Pages{
     Init,
     Main,
@@ -71,10 +73,14 @@ struct Main{
     config: Config,
     pages: Pages,
     provider: SearchProvider,
+    panel_extended: bool,
+    previous_page : Pages,
+
 
     anime: String,
     translation: Translation,
     shows: Vec<Edge>,
+    show_focus: bool,
     episode_list: episodes::AvailableEpisodesDetail,
     show_info: animeschedule::Anime,
     selected_show: Edge,
@@ -82,7 +88,11 @@ struct Main{
     selected_episode_urls: Vec<(String,Vec<(i32,String)>)>,
     player: Player,
 
-    anilist_info: anilist_shows::MediaListCollection,
+    anilist_info: anilist_user_shows::MediaListCollection,
+    anilist_search: anilist_search_shows::Page,
+    anilist_selected_show : anilist_search_shows::Medum,
+    anilist_error : String,
+    anilist_progress: anilist_user_shows::Entry,
     tx: Sender<String>,
     rx: Receiver<String>,
 }
@@ -94,10 +104,13 @@ impl Default for Main{
             config: Config::default(),
             pages: Pages::Init,
             provider: SearchProvider::default(),
+            panel_extended: false,
+            previous_page: Pages::Main,
 
             anime: Default::default(),
             translation: Translation::Sub,
             shows: Vec::new(),
+            show_focus: false,
             show_info: animeschedule::Anime::default(),
             selected_show: Edge::default(),
             selected_episode: Default::default(),
@@ -105,7 +118,12 @@ impl Default for Main{
             episode_list: episodes::AvailableEpisodesDetail::default(),
             player: Player::default(),
 
-            anilist_info: anilist_shows::MediaListCollection::default(),
+            anilist_info: anilist_user_shows::MediaListCollection::default(),
+            anilist_search: Default::default(),
+            anilist_progress: Default::default(),
+            anilist_selected_show: Default::default(),
+            anilist_error: Default::default(),
+
 
             tx, 
             rx 
@@ -116,6 +134,10 @@ impl Default for Main{
 impl Main{
     fn new(cc: &eframe::CreationContext<'_>)->Self{
         Self::default()
+    }
+
+    fn episode_list(&mut self, ui: &mut egui::Ui){
+        
     }
 }
 
@@ -128,12 +150,13 @@ impl eframe::App for Main{
         //     update_settings(&self.config);
             
         // }
-
+        
         
         egui::MenuBar::new().ui(ui, |ui|{
             ui.separator();
             ui.menu_button("File", |ui|{
                 if ui.button("Settings").clicked(){
+                    self.previous_page = self.pages;
                     self.pages = Pages::Settings;
                 }
                 if ui.button("Quit").clicked(){
@@ -143,19 +166,169 @@ impl eframe::App for Main{
             ui.separator();
             ui.menu_button("Anilist", |ui|{
                 if ui.button("Get Auth token").clicked(){
+                    
+                    self.previous_page = self.pages;
                     self.pages = Pages::APIAuth;
                 }
 
                 ui.add_enabled_ui(!&self.config.anilist.token.is_empty(), |ui|{
                     if ui.button("My Anilist").clicked(){
+                        self.previous_page = self.pages;
                         self.pages = Pages::Anilist;
                         if let Ok(info) = anilist::get_anime_from_list(self.config.anilist.user_id, &self.config.anilist.token){
                             self.anilist_info = info;
                         }
                     }
                 })
-            })
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::RIGHT), |ui|{
+                if self.show_focus == true{
+                    if self.panel_extended == true{
+                        if ui.button("Close Panel").clicked(){
+                            self.panel_extended = !self.panel_extended;
+                        }
+                    } else {
+                        if ui.button("Open Panel").clicked(){
+                            self.panel_extended = !self.panel_extended;
+                        }
+                    }
+                }
+                
+            });
         });
+
+        egui::Panel::right("right").resizable(true).min_size(ui.ctx().viewport_rect().width()/2.0).show_collapsible(ui, &mut self.panel_extended, |ui| {
+
+            match self.pages{
+            Pages::Init => {
+                egui_extras::install_image_loaders(ui.ctx());
+            },
+            Pages::Main | Pages::Anilist=> {
+                if self.provider == SearchProvider::Anilist{
+                    if self.show_focus == true {
+                        
+                        egui_extras::install_image_loaders(ui.ctx());
+                        egui::ScrollArea::vertical().id_salt("selected_show_frame").show(ui, |ui|{
+                            if self.pages == Pages::Anilist{
+                                let progress = &self.anilist_progress.progress;
+                                if let Some(episode_count) = &self.anilist_selected_show.episodes{
+                                    let episode_progress = progress/episode_count;
+                                    ui.add(egui::ProgressBar::new(episode_progress as f32).text(format!("{progress}/{episode_count}")));
+                                }
+                            }
+                            
+                            if let Some(title) = &self.anilist_selected_show.title{
+                                if let Some(user_preferred) = &title.user_preferred{
+                                    ui.heading(user_preferred);
+                                }
+                                
+                            }
+                            ui.horizontal(|ui|{
+                                ui.label("Genres: ");
+                                ui.separator();
+                                if let Some(genres) = &self.anilist_selected_show.genres{
+                                    for genre in genres{
+                                        ui.label(genre);
+                                        ui.separator();
+                                    
+                                    }
+                                }
+                                
+                            });
+                            if let Some(cover_image) = &self.anilist_selected_show.cover_image{
+                                if let Some(extra_large) = &cover_image.extra_large{
+                                    ui.add(egui::Image::new(extra_large)
+                                    .max_width(ui.ctx().viewport_rect().width()/4.0)
+                                    .maintain_aspect_ratio(true));
+
+                                }
+                            }
+                            if let Some(description) = &self.anilist_selected_show.description{
+                                ui.label(description.replace("<BR>", "").replace("<br>", ""));
+                            
+                            }
+                            if let Some(score) = &self.anilist_selected_show.average_score{
+                                ui.label(format!("Average Score: {}", score));
+                            } else {
+                                ui.label("No Score Available");
+                            }
+                            if let Some(season) =&self.anilist_selected_show.season && let Some(season_year) = &self.anilist_selected_show.season_year{
+                                ui.label(format!("Season: {} {}",season,season_year));
+                            
+                            }
+                            if let Some(next_episode) = &self.anilist_selected_show.next_airing_episode{
+                                if let Some(next_airing) = next_episode.time_until_airing{
+                                    let airdate = chrono::Utc::now() - chrono::Duration::seconds(next_airing);                                
+                                    ui.label(format!("Next Episode Release: {} UTC",airdate.date_naive()));
+                                
+                                }
+                                
+                                
+                            } else {
+                                ui.label("No more additional episodes airing.");
+                            }
+
+                            ui.horizontal(|ui|{
+                                if let Some(title) = &self.anilist_selected_show.title{
+                                    if let Some(romaji) = &title.romaji{
+                                    if ui.button("Watch Sub").clicked(){
+                                        
+                                        if let Ok(shows) = get_shows(&romaji, &Translation::Sub, &self.config){
+                                            for show in shows{
+                                                dbg!(&show);
+                                                dbg!(&romaji);
+                                                
+                                                if compare_names(&show, &romaji) == true{
+                                                    self.selected_show = show.clone();
+                                                        if let Ok(eps) = get_episode_list(&show.id){
+                                                            dbg!(&eps);
+                                                            self.episode_list = eps.clone();
+                                                        }
+                                                        self.previous_page = self.pages;
+                                                        self.pages= Pages::Show;
+                                                        self.show_focus = false;
+                                                
+                                                }
+                                                
+                                            }
+                                        }
+                                    }
+                                    if ui.button("Watch Dub").clicked(){
+                                        if let Ok(shows) = get_shows(&romaji, &Translation::Dub, &self.config){
+                                            for show in shows{
+                                                if &show.name.to_lowercase() == &romaji.to_ascii_lowercase(){
+                                                    self.selected_show = show.clone();
+                                                        if let Ok(eps) = get_episode_list(&show.id){
+                                                        self.episode_list = eps.clone();
+                                                    }
+                                                    self.previous_page = self.pages;
+                                                    self.pages= Pages::Show;
+                                                    self.show_focus = false;
+                                                    
+                                                }
+                                            }
+                                            
+                                        }
+                                    } 
+                                        }
+                                        
+                                }
+                                
+                            });
+                            
+                            
+                        });
+                        
+                    }
+                }
+            },
+            Pages::APIAuth => (),
+            Pages::Settings => (),
+            Pages::Show => (),
+        }
+    });
+
 
         egui::CentralPanel::default().show(ui, |ui| match self.pages{
             
@@ -172,20 +345,24 @@ impl eframe::App for Main{
 
             }
             Pages::Main => {
-                ui.horizontal(|ui|{
-                    let search_bar = ui.add(egui::TextEdit::singleline(&mut self.anime).hint_text("Search for show..."));
-                    ComboBox::new("provider", "Search Provider").selected_text(format!("{:?}", self.provider)).show_ui(ui, |ui|{
+                ComboBox::new("provider", "Search Provider").selected_text(format!("{:?}", self.provider)).show_ui(ui, |ui|{
                             ui.selectable_value(&mut self.provider, SearchProvider::Anilist, "Anilist");
                             ui.selectable_value(&mut self.provider, SearchProvider::AllAnime, "AllAnime");
                         
                     });
+                ui.horizontal(|ui|{
+                    
+                    let search_bar = ui.add(egui::TextEdit::singleline(&mut self.anime).hint_text("Search for show..."));
+                    
                     match self.provider{
                         SearchProvider::Anilist => {
                             if ui.button("Search").clicked() || (search_bar.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))){
-                                search_anilist(&self.anime, &self.config);
-                            
-                            
+                                if let Ok(pages) = search_anilist(&self.anime, &self.config){
+                                    self.anilist_search = pages;
+                                    
+                                }
                             }
+                            
                         },
                         SearchProvider::AllAnime => {
                         ComboBox::new("translation", "Translation Type").selected_text(format!("{:?}", self.translation)).show_ui(ui, |ui|{
@@ -206,68 +383,124 @@ impl eframe::App for Main{
                     
                     
                 });
+                match self.provider{
+                    SearchProvider::AllAnime =>{
+                        if !self.shows.is_empty() {
+                            egui::ScrollArea::vertical().id_salt("show_list").show(ui, |ui|{
+                            let selected_states = vec![false; self.shows.clone().len()];
 
-                if !self.shows.is_empty(){
-                    egui::ScrollArea::vertical().id_salt("show_list").show(ui, |ui|{
-                    let selected_states = vec![false; self.shows.clone().len()];
+                            for (i,show) in self.shows.iter().enumerate()
+                            {
+                                let is_selected = selected_states[i];
+                                ui.horizontal(|ui|{
+                                    // ui.label(&show.id);
+                                    // ui.separator();
 
-                    for (i,show) in self.shows.iter().enumerate()
-                    {
-                        let is_selected = selected_states[i];
-                        ui.horizontal(|ui|{
-                            // ui.label(&show.id);
-                            // ui.separator();
-
-                            if ui.selectable_label(is_selected, &show.name).clicked(){
-                                self.selected_show = show.clone();
-                                if let Ok(eps) = get_episode_list(&show.id){
-                                    self.episode_list = eps.clone();
-                                }
-                                self.pages = Pages::Show;
-                                ui.ctx().request_repaint();
-                                
-                            };
-                            ui.separator();
-                            ui.label("Number of episodes :");
-                            match self.translation{
-                                Translation::Sub => {
-                                        if let Some(sub) = show.available_episodes.sub{
-                                            ui.label(sub.to_string());
-                                        } else {
-                                            ui.label("No available episodes for that translation type");
+                                    if ui.selectable_label(is_selected, &show.name).clicked(){
+                                        self.selected_show = show.clone();
+                                        if let Ok(eps) = get_episode_list(&show.id){
+                                            self.episode_list = eps.clone();
                                         }
-                                },
-                                Translation::Dub => {
-                                    if let Some(dub) = show.available_episodes.dub{
-                                        ui.label(dub.to_string());
-                                    } else {
-                                        ui.label("No available episodes for that translation type");
-                                    }
-                                },
-                                Translation::Raw => {
-                                    if let Some(raw) = show.available_episodes.raw{
-                                        ui.label(raw.to_string());
-                                    } else {
-                                        ui.label("No available episodes for that translation type");
-                                    }
-                                },
+                                        self.previous_page = self.pages;
+                                        self.pages = Pages::Show;
+                                        ui.ctx().request_repaint();
+                                        
+                                    };
+                                    ui.separator();
+                                    ui.label("Number of episodes :");
+                                    match self.translation{
+                                        Translation::Sub => {
+                                                if let Some(sub) = show.available_episodes.sub{
+                                                    ui.label(sub.to_string());
+                                                } else {
+                                                    ui.label("No available episodes for that translation type");
+                                                }
+                                        },
+                                        Translation::Dub => {
+                                            if let Some(dub) = show.available_episodes.dub{
+                                                ui.label(dub.to_string());
+                                            } else {
+                                                ui.label("No available episodes for that translation type");
+                                            }
+                                        },
+                                        Translation::Raw => {
+                                            if let Some(raw) = show.available_episodes.raw{
+                                                ui.label(raw.to_string());
+                                            } else {
+                                                ui.label("No available episodes for that translation type");
+                                            }
+                                        },
 
 
+                                    }
+                                    
+                                    
+                                });
+                                
                             }
+                            });
                             
-                            
-                        });
-                        
-                    }
-                    });
-                    
-                }
+                        }
 
+                    },
+                    SearchProvider::Anilist => {
+                        
+
+                        if let current_page = self.anilist_search.page_info.current_page {
+                            let page_info = &self.anilist_search.page_info;
+                            let current_page = page_info.current_page;
+                            let last_page = page_info.last_page;
+
+                            egui::ScrollArea::vertical().id_salt("anilist_search").show(ui, |ui|{
+                                if let Some(medias) = &self.anilist_search.media{
+                                    let selected_state = vec![false; medias.len()];
+                                    for (i, media) in medias.into_iter().enumerate(){
+                                        if let Some(title) = &media.title{
+                                            if let Some(user_preferred) = &title.user_preferred{
+                                            if ui.selectable_label(selected_state[i], user_preferred).clicked(){
+                                                self.anilist_selected_show = media.clone();
+                                                self.panel_extended = true;
+                                        }
+                                            }
+                                        }
+                                        
+                                    }
+                                }
+                            });
+                            
+                            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui|{
+                                
+                                if page_info.has_next_page == Some(true){
+                                    ui.horizontal(|ui|{
+                                        ui.add_enabled_ui(current_page != Some(1), |ui|{
+                                            if ui.button("<").clicked(){
+                                                    
+                                            }
+                                        });
+                                        ui.add_enabled_ui(current_page != last_page, |ui| {
+                                            if ui.button(">").clicked(){
+                                                
+                                            }
+                                        });
+
+                                    });   
+                                }
+ 
+                            });
+                            
+                        
+                        }
+                    }
+                }
+                
             },
             Pages::Show => {
+                if self.panel_extended == true{
+                    self.panel_extended = false;
+                }
                 ui.horizontal(|ui|{
                     if ui.selectable_label(self.pages.is_main_page(), "<").clicked(){
-                        self.pages = Pages::Main;
+                        self.pages = self.previous_page;
                         ui.ctx().request_repaint();
                     }
                     ui.heading(&self.selected_show.name);
@@ -326,15 +559,15 @@ impl eframe::App for Main{
                                     }
                                     // dbg!(&self.selected_episode);
                                     // dbg!(&ep);
-                                    if self.selected_episode == ep.clone(){
+                                 if self.selected_episode == ep.clone(){
                                         ui.horizontal(|ui|{
                                             ui.label("Sources: ");
                                             let selected_url = vec![false; self.selected_episode_urls.clone().len()];
                                             for (i,url) in self.selected_episode_urls.clone().iter().enumerate(){
                                                 let source_name = &url.0;
                                                     match source_name.as_str(){
-                                                        // will add later once I get them set up
-                                                        "Mp4"| "Fm-Hls" | "S-mp4" | "Yt-mp4" => {
+                                                        // "Fm-Hls" will add later once set up
+                                                        "Mp4"|  "S-mp4" | "Yt-mp4" => {
                                                             
                                                             if ui.selectable_label(selected_url[i], match source_name.as_str(){
                                                                 "Mp4" =>  "Mp4Upload",
@@ -363,6 +596,20 @@ impl eframe::App for Main{
                                                                         Ok(spawned) => {
                                                                             self.player.spawned= true;
                                                                             self.player.process_id = spawned.id();
+                                                                            if self.previous_page == Pages::Anilist && !self.config.anilist.token.is_empty(){
+                                                                            dbg!(&self.anilist_selected_show);
+                                                                            if let Some(show_id) = &self.anilist_selected_show.id{
+                                                                                if self.anilist_selected_show.episodes.unwrap().to_string() != self.selected_episode{
+                                                                                    anilist::update_progress(&show_id, Some(&self.selected_episode), anilist::WatchStatus::Current, &self.config);
+                                                                                }else{
+                                                                                    anilist::update_progress(&show_id, Some(&self.selected_episode), anilist::WatchStatus::Completed, &self.config);
+                                                                                }
+
+                                                                                    
+                                                                                
+                                                                            }
+                                                                            
+                                                                        }
                                                                             
                                                                         },
                                                                         Err(e) => {dbg!(e); ()}
@@ -405,7 +652,7 @@ impl eframe::App for Main{
 
                     },
                     Translation::Dub => {
-                        if !self.episode_list.raw.is_empty(){
+                        if !self.episode_list.dub.is_empty(){
                             let selected_states = vec![false; self.episode_list.dub.clone().len()];
                             for (i,episodes) in self.episode_list.dub.iter().rev().enumerate(){
                                 let mut is_selected = selected_states[i];
@@ -474,6 +721,7 @@ impl eframe::App for Main{
                         Err(_) => {write_to_log("Unable to get User ID",ani_search::MessageType::Error); }
                     }
                     update_settings(&self.config);
+                    self.previous_page = self.pages;
                     self.pages = Pages::Main;
                 }
 
@@ -503,6 +751,7 @@ impl eframe::App for Main{
                     ui.horizontal(|ui|{
                         if ui.button("Save").clicked(){
                             update_settings(&self.config);
+                            self.previous_page = self.pages;
                             self.pages = Pages::Main;
                         }
                         if ui.button("Apply").clicked(){
@@ -516,6 +765,9 @@ impl eframe::App for Main{
             Pages::Anilist => {
                 let user = &self.anilist_info.user;
                 ui.horizontal(|ui|{
+                    if ui.button("<").clicked(){
+                        self.pages = self.previous_page;
+                    }
                     ui.heading(format!("{}'s Anilist Information", user.name));
                     ui.image(&user.avatar.large);
                 });
@@ -534,7 +786,37 @@ impl eframe::App for Main{
                                     let selected_state = vec![false; item.entries.len()]; 
                                     for (i,show) in item.entries.clone().into_iter().enumerate(){
                                         if let Some(title) = &show.media.title.english{
-                                            ui.selectable_label(selected_state[i], title);
+                                            if ui.selectable_label(selected_state[i], title).clicked(){
+                                                self.anilist_progress = show.clone();
+                                                if let Ok(searched_title) = search_anilist(title, &self.config){
+                                                    if  let Some(current_page) = searched_title.page_info.current_page{
+                                                        if current_page == 1{
+                                                        
+                                                        dbg!(&searched_title.media);
+                                                        if let Some(medias) = searched_title.media{
+                                                        if medias.len() > 0 {
+                                                            for media in medias{
+                                                                if let Some(title_searched) = &media.title{
+                                                                    if let Some(user_preferred) = &title_searched.user_preferred{
+                                                                        if user_preferred == title{
+                                                                            dbg!(&media);
+                                                                            self.anilist_selected_show = media.clone();
+                                                                            self.show_focus = true;
+                                                                            self.panel_extended = true;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            
+                                                        } else {
+                                                            self.anilist_error = "Unable to find show".to_string();
+                                                        }
+                                                        }
+                                                        
+                                                    }
+                                                }
+                                                }
+                                            };
                                             
                                         }
                                 }
@@ -544,11 +826,41 @@ impl eframe::App for Main{
                         },
                         "planning" => {
                             egui::CollapsingHeader::new("Planning").id_salt("Planning").show(ui, |ui| {
-                                egui::ScrollArea::vertical().id_salt("watching_scroll").max_height(250.0).show(ui, |ui|{
+                                egui::ScrollArea::vertical().id_salt("planning_scroll").max_height(250.0).show(ui, |ui|{
                                     let selected_state = vec![false; item.entries.len()]; 
                                     for (i,show) in item.entries.clone().into_iter().enumerate(){
                                         if let Some(title) = &show.media.title.english{
-                                            ui.selectable_label(selected_state[i], title);
+                                            if ui.selectable_label(selected_state[i], title).clicked(){
+                                                self.anilist_progress = show.clone();
+                                                if let Ok(searched_title) = search_anilist(title, &self.config){
+                                                    if  let Some(current_page) = searched_title.page_info.current_page{
+                                                        if current_page == 1{
+                                                        
+                                                        dbg!(&searched_title.media);
+                                                        if let Some(medias) = searched_title.media{
+                                                        if medias.len() > 0 {
+                                                            for media in medias{
+                                                                if let Some(title_searched) = &media.title{
+                                                                    if let Some(user_preferred) = &title_searched.user_preferred{
+                                                                        if user_preferred == title{
+                                                                            dbg!(&media);
+                                                                            self.anilist_selected_show = media.clone();
+                                                                            self.show_focus = true;
+                                                                            self.panel_extended = true;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            
+                                                        } else {
+                                                            self.anilist_error = "Unable to find show".to_string();
+                                                        }
+                                                        }
+                                                        
+                                                    }
+                                                }
+                                                }
+                                            };
                                             
                                         }
                                 }
@@ -557,11 +869,41 @@ impl eframe::App for Main{
                         },
                         "completed" => {
                             egui::CollapsingHeader::new("Completed").id_salt("Completed").show(ui, |ui| {
-                                egui::ScrollArea::vertical().id_salt("watching_scroll").max_height(250.0).show(ui, |ui|{
+                                egui::ScrollArea::vertical().id_salt("completed_scroll").max_height(250.0).show(ui, |ui|{
                                     let selected_state = vec![false; item.entries.len()]; 
                                     for (i,show) in item.entries.clone().into_iter().enumerate(){
                                         if let Some(title) = &show.media.title.english{
-                                            ui.selectable_label(selected_state[i], title);
+                                            if ui.selectable_label(selected_state[i], title).clicked(){
+                                                self.anilist_progress = show.clone();
+                                                if let Ok(searched_title) = search_anilist(title, &self.config){
+                                                    if  let Some(current_page) = searched_title.page_info.current_page{
+                                                        if current_page == 1{
+                                                        
+                                                        dbg!(&searched_title.media);
+                                                        if let Some(medias) = searched_title.media{
+                                                        if medias.len() > 0 {
+                                                            for media in medias{
+                                                                if let Some(title_searched) = &media.title{
+                                                                    if let Some(user_preferred) = &title_searched.user_preferred{
+                                                                        if user_preferred == title{
+                                                                            dbg!(&media);
+                                                                            self.anilist_selected_show = media.clone();
+                                                                            self.show_focus = true;
+                                                                            self.panel_extended = true;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            
+                                                        } else {
+                                                            self.anilist_error = "Unable to find show".to_string();
+                                                        }
+                                                        }
+                                                        
+                                                    }
+                                                }
+                                                }
+                                            };
                                             
                                         }
                                 }
@@ -579,3 +921,5 @@ impl eframe::App for Main{
         });
     }
 }
+
+

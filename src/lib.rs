@@ -1,7 +1,5 @@
 use std::{
-    path::*,
-    error::Error, 
-    fs, io::{Read, Write, stdout}, process::Command, string, sync::mpsc::{Receiver, Sender}, time::Duration
+    error::Error, fs, io::{BufWriter, Read, Write, stdout}, path::*, process::Command, string, sync::mpsc::{Receiver, Sender}, time::Duration
 
 };
 
@@ -10,7 +8,7 @@ use base64::Engine;
 use egui::Key::V;
 use hybrid_array::{ArraySize, typenum};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use openssl_sys::EVP_MAC_CTX_new;
 use tokio::io::repeat;
 use urlencoding::encode;
@@ -380,8 +378,10 @@ pub fn generate_link(source: &SourceUrl) -> Result<Vec<(i32, String)>, Box<dyn s
                 Ok(episode_link)
             },
             // "Fm-Hls" => {
+                
             //     let source_id = source_init("Filemoon", source);
-            //     get_filemoon_link(source_id.as_str());
+            //     dbg!(source_id);
+            //     //get_filemoon_link(source_id.as_str());
             //     Ok(Vec::new())
             //     },
             "Yt-mp4" => {
@@ -598,6 +598,8 @@ pub fn get_episode_list(show_id: &String) -> Result<episodes::AvailableEpisodesD
 
 }
 
+
+
 pub fn get_episode_url(show_id: &String, translation_type: &String,  episode_num: &String)->Result<Vec<(String,Vec<(i32,String)>)>, Box<dyn std::error::Error>>{
 
     let episode_embed_gql="query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls }}";
@@ -805,6 +807,34 @@ pub fn load_setting_file()->Result<String, Box<dyn std::error::Error>>{
         Err(e) => Err(e.into())
     }
 
+    
+
+}
+
+pub fn output_json(json:Value, path: &str){
+    let file = std::fs::File::create(path).expect("unable to create file.");
+    serde_json::to_writer_pretty(BufWriter::new(file), &json);
+}
+
+fn clean_string(input: &str) -> String{
+    let result:String = input
+    .chars()
+    .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+    .collect();
+
+    result
+}
+
+pub fn compare_names(a: &Edge, b: &str) -> bool{
+    
+    let clean_a = clean_string(&a.name);
+    let clean_b = clean_string(b);
+    dbg!(&clean_b);
+    if clean_a.to_lowercase() == clean_b.to_lowercase(){
+        true
+    } else {
+        false
+    }
     
 
 }

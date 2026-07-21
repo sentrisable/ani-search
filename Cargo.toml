@@ -25,5 +25,6 @@ aes-gcm = "0.11.0"
 hybrid-array = "0.4.13"
 regex = "1.13.1"
 toml = "1.1.3"
-image = {version ="0.24", features = ["jpeg", "png"]}
+image = {version ="0.25.6", features = ["jpeg", "png"]}
+profiling-procmacros = "1.0.18"
 
