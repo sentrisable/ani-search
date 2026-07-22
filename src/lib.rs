@@ -604,9 +604,9 @@ pub fn get_episode_url(show_id: &String, translation_type: &String,  episode_num
 
     let episode_embed_gql="query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls }}";
     
-    let epoch = 6884;
-    let build_id = 50;
-    let key = "f34fa715e2958b8c1ebc6efa4d089acd8f196d8b83d4b6201586c00c8a52e4a8";
+    let epoch = 6885;
+    let build_id = 64;
+    let key = "ff102360a5065bb72fc128f7efa5042dbf4db582e5c58754078265926a76bfd8";
     let query_hash = "d405d0edd690624b66baba3068e0edc3ac90f1597d898a1ec8db4e5c43c00fec";
     
 
@@ -814,6 +814,15 @@ pub fn load_setting_file()->Result<String, Box<dyn std::error::Error>>{
 pub fn output_json(json:Value, path: &str){
     let file = std::fs::File::create(path).expect("unable to create file.");
     serde_json::to_writer_pretty(BufWriter::new(file), &json);
+}
+
+pub fn capitalize_word(input: &str) -> String{
+    let mut chars = input.chars();
+    match chars.next(){
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str()
+    }
+
 }
 
 fn clean_string(input: &str) -> String{

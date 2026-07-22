@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use std::{time::Duration, sync::{mpsc::{Receiver, Sender}, Arc, Mutex}, task, process};
 
 use eframe::{egui, wgpu::rwh::RawDisplayHandle::UiKit};
@@ -10,7 +12,7 @@ use tokio::runtime::Runtime;
 
 
 use ani_search::{
-    AnilistVariables, AppSettings, AvailableEpisodes, Config, Edge, Translation, anilist, anilist_search_shows, anilist_user_shows, animeschedule, check_credentials, compare_names, episode_source, episodes, generate_link, get_config, get_episode_list, get_episode_url, get_next_episode_release, get_shows, search_anilist, update_settings, write_to_log,
+    AnilistVariables, AppSettings, AvailableEpisodes, Config, Edge, Translation, WatchStatus, anilist, anilist_search_shows, anilist_user_shows::{self, List}, animeschedule, capitalize_word, check_credentials, compare_names, episode_source, episodes, generate_link, get_config, get_episode_list, get_episode_url, get_next_episode_release, get_shows, search_anilist, update_settings, write_to_log,
 
 };
 
@@ -91,6 +93,7 @@ struct Main{
     anilist_info: anilist_user_shows::MediaListCollection,
     anilist_search: anilist_search_shows::Page,
     anilist_selected_show : anilist_search_shows::Medum,
+    anilist_show_status: WatchStatus,
     anilist_error : String,
     anilist_progress: anilist_user_shows::Entry,
     tx: Sender<String>,
@@ -122,6 +125,7 @@ impl Default for Main{
             anilist_search: Default::default(),
             anilist_progress: Default::default(),
             anilist_selected_show: Default::default(),
+            anilist_show_status: WatchStatus::None,
             anilist_error: Default::default(),
 
 
@@ -136,9 +140,203 @@ impl Main{
         Self::default()
     }
 
-    fn episode_list(&mut self, ui: &mut egui::Ui){
+    fn play_translation(&mut self, translation: Translation, ui: &mut egui::Ui){
+        let heading = match translation{
+            Translation::Sub => "Subbed",
+            Translation::Dub => "Dubbed",
+            Translation::Raw => "Raw"
+        };
+
+        let episodes = match translation{
+            Translation::Sub => self.episode_list.sub.clone(),
+            Translation::Dub => self.episode_list.dub.clone(),
+            Translation::Raw => self.episode_list.raw.clone()
+        };
+        if !episodes.is_empty(){
+            ui.heading(format!("{heading} Episodes"));
+            let selected_states = vec![false;episodes.clone().len()];
+            egui::ScrollArea::vertical().id_salt(heading).show(ui, |ui|{
+
+            
+            for (i,episodes) in episodes.iter().rev().enumerate(){
+                let is_selected = selected_states[i];
+                if let Some(ep) = episodes{
+                    if ui.selectable_label(is_selected, format!("Episode: {ep}")).clicked(){
+                        self.selected_episode = ep.clone();
+                        match get_episode_url(&self.selected_show.id, &"sub".to_string(), ep){
+                        Ok(urls) =>{
+                            self.selected_episode_urls = urls.clone();
+                            //let child =process::Command::new("mpv").arg(&urls[2].source_url.clone()).spawn().expect("Failed to start mpv");
+
+                        },
+                        Err(e) => {
+                            println!("{e}");
+                        } 
+                        
+                    }
+                    }
+                    // dbg!(&self.selected_episode);
+                    // dbg!(&ep);
+                    if self.selected_episode == ep.clone(){
+                        ui.horizontal(|ui|{
+                            ui.label("Sources: ");
+                            let selected_url = vec![false; self.selected_episode_urls.clone().len()];
+                            for (i,url) in self.selected_episode_urls.clone().iter().enumerate(){
+                                let source_name = &url.0;
+                                    match source_name.as_str(){
+                                        // "Fm-Hls" will add later once set up
+                                        "Mp4"|  "S-mp4" | "Yt-mp4" => {
+                                            
+                                            if ui.selectable_label(selected_url[i], match source_name.as_str(){
+                                                "Mp4" =>  "Mp4Upload",
+                                                "Fm-Hls" => "Filemoon",
+                                                "S-mp4" => "Sharepoint", 
+                                                "Yt-mp4" => "Yt",
+                                                _=> "No Source available"
+                                            }).clicked(){
+                                                let episode_link = &url.1[0].1;
+                                                    let media_title_arg = format!("--force-media-title=\"{}\": Episode {}", self.selected_show.name, self.selected_episode);
+                                                    let mut refer_flag_arg = String::new();
+                                                    match source_name.as_str() {
+                                                        "Mp4" => refer_flag_arg = "--referrer=https://www.mp4upload.com".to_string(),
+                                                        _ => ()
+
+                                                    }
+                                                    if self.player.spawned == true && self.player.process_id > 0{
+                                                        #[cfg(unix)]
+                                                        match process::Command::new("kill").args(&["-9", &self.player.process_id.to_string()]).output(){
+                                                            Ok(process) => () ,
+                                                            Err(e) => ()
+                                                        };   
+                                                        
+                                                    }
+                                                    match process::Command::new("mpv").arg("--tls-verify=no").arg(media_title_arg).arg(refer_flag_arg).arg(episode_link).spawn(){
+                                                        Ok(spawned) => {
+                                                            self.player.spawned= true;
+                                                            self.player.process_id = spawned.id();
+                                                            if self.previous_page == Pages::Anilist && !self.config.anilist.token.is_empty(){
+                                                            dbg!(&self.anilist_selected_show);
+                                                            if let Some(show_id) = &self.anilist_selected_show.id{
+                                                                if self.anilist_selected_show.duration.unwrap().to_string() != self.selected_episode{
+                                                                    anilist::update_progress(&show_id, Some(&self.selected_episode), anilist::WatchStatus::Watching, &self.config);
+                                                                }else{
+                                                                    anilist::update_progress(&show_id, Some(&self.selected_episode), anilist::WatchStatus::Completed, &self.config);
+                                                                }
+
+                                                                    
+                                                                
+                                                            }
+                                                            
+                                                        }
+                                                            
+                                                        },
+                                                        Err(e) => {dbg!(e); ()}
+                                                    }
+                                                
+                                            }
+                                            ui.separator();
+                                        },
+                                        _=>{}
+                                    }
+                                
+                                
+                                    
+                                    //
+                                    //println!("{}",url.source_url);
+                                    //let refer_flag_arg = "--referrer=https://www.mp4upload.com";
+
+                                    //let spawn_player = process::Command::new("mpv").arg("--tls-verify=no").arg(media_title_arg).arg(&url.source_url.clone()).spawn();
+                                    //match spawn_player{
+                                    //    Ok(child) => {},
+                                    //    Err(e)=> {println!("{e}");}
+                                    //}
+                                };
+                                
         
+                        });
+                        
+                    }
+                }
+                
+            }
+
+            if self.player.spawned == true{
+                ui.label(format!("Now Playing Episode {}.", self.selected_episode));
+            }
+        });
+        } else {
+            ui.label("No available episodes for selected translation.");
+        }
+                        
     }
+
+    fn anilist_show_status(&mut self, mut item: List, ui: &mut egui::Ui){
+        let status = capitalize_word(&item.name);
+        item.entries.sort_by(|a,b| a.media.title.user_preferred.cmp(&b.media.title.user_preferred));
+        egui::CollapsingHeader::new(&status).id_salt(&status.clone().to_lowercase()).show(ui, |ui| {   
+            // ui.horizontal(|ui|{
+            //     if ui.button("^").clicked(){
+                    
+            //     }
+            // });                     
+            egui::ScrollArea::vertical().id_salt(format!("{status}_scroll")).max_height(250.0).show(ui, |ui|{
+                let selected_state = vec![false; item.entries.len()]; 
+                for (i,show) in item.entries.into_iter().enumerate(){
+                    if let Some(title) = &show.media.title.english{
+                        if ui.selectable_label(selected_state[i], title).clicked(){
+                            self.anilist_progress = show.clone();
+                            if let Ok(searched_title) = search_anilist(title, &self.config){
+                                if  let Some(current_page) = searched_title.page_info.current_page{
+                                    if current_page == 1{
+                                    
+                                    dbg!(&searched_title.media);
+                                    if let Some(medias) = searched_title.media{
+                                    if medias.len() > 0 {
+                                        for media in medias{
+                                            if let Some(title_searched) = &media.title{
+                                                if let Some(user_preferred) = &title_searched.user_preferred{
+                                                    if user_preferred == title{
+                                                        dbg!(&media);
+                                                        if let Some(list_entry) = &media.media_list_entry{
+                                                            if let Some(status) = &list_entry.status{
+                                                                match status.to_uppercase().as_str(){
+                                                                    "COMPLETED"=> self.anilist_show_status = WatchStatus::Completed,
+                                                                    "CURRENT"=> self.anilist_show_status = WatchStatus::Watching,
+                                                                    "DROPPED"=> self.anilist_show_status = WatchStatus::Dropped,
+                                                                    "PAUSED"=> self.anilist_show_status = WatchStatus::Paused,
+                                                                    "PLANNING"=> self.anilist_show_status = WatchStatus::Planning,
+                                                                    "REPEATING"=> self.anilist_show_status = WatchStatus::Repeating,
+                                                                    _ => self.anilist_show_status = WatchStatus::None
+                                                                }
+                                                            }
+                                                        }
+                                                        self.anilist_selected_show = media.clone();
+                                                        self.show_focus = true;
+                                                        self.panel_extended = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                    } else {
+                                        self.anilist_error = "Unable to find show".to_string();
+                                    }
+                                    }
+                                    
+                                }
+                            }
+                            }
+                        };
+                        
+                    }
+            }
+            });
+            
+        });
+}
+
+
+
 }
 
 impl eframe::App for Main{
@@ -211,11 +409,34 @@ impl eframe::App for Main{
                         egui_extras::install_image_loaders(ui.ctx());
                         egui::ScrollArea::vertical().id_salt("selected_show_frame").show(ui, |ui|{
                             if self.pages == Pages::Anilist{
-                                let progress = &self.anilist_progress.progress;
-                                if let Some(episode_count) = &self.anilist_selected_show.episodes{
-                                    let episode_progress = progress/episode_count;
+                                let progress= self.anilist_progress.progress as f32;
+                                
+                                if let Some(episode_count) = self.anilist_selected_show.episodes{
+                                
+                                    let episode_progress = (progress/ (episode_count as f32)) as f32;
                                     ui.add(egui::ProgressBar::new(episode_progress as f32).text(format!("{progress}/{episode_count}")));
+                                } else {
+                                    if let Some(next_episode_main) = &self.anilist_selected_show.next_airing_episode{
+                                        if let Some(next_episode) = next_episode_main.episode{
+
+                                            let episode_progress = progress/(next_episode-1) as f32;
+                                            
+                                            ui.add(egui::ProgressBar::new(episode_progress as f32).text(format!("{}/{}", progress, (next_episode-1))));
+                                        }
+                                    } else {
+                                        ui.label("Unable to Display Progress");
+                                    }
                                 }
+
+                                egui::ComboBox::new("show_status", "Status").selected_text(format!("{:?}", self.anilist_show_status)).show_ui(ui, |ui|{
+                                    ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Completed, "Completed");
+                                    ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Repeating, "Repeating");
+                                    ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Watching, "Watching");
+                                    ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Paused, "Paused");
+                                    ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Dropped, "Dropped");
+                                    ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Planning, "Planning");
+                                    ui.selectable_value(&mut self.anilist_show_status, WatchStatus::None, "None");         
+                                });
                             }
                             
                             if let Some(title) = &self.anilist_selected_show.title{
@@ -446,9 +667,8 @@ impl eframe::App for Main{
                     SearchProvider::Anilist => {
                         
 
-                        if let current_page = self.anilist_search.page_info.current_page {
+                        if let Some(current_page) = self.anilist_search.page_info.current_page {
                             let page_info = &self.anilist_search.page_info;
-                            let current_page = page_info.current_page;
                             let last_page = page_info.last_page;
 
                             egui::ScrollArea::vertical().id_salt("anilist_search").show(ui, |ui|{
@@ -472,12 +692,12 @@ impl eframe::App for Main{
                                 
                                 if page_info.has_next_page == Some(true){
                                     ui.horizontal(|ui|{
-                                        ui.add_enabled_ui(current_page != Some(1), |ui|{
+                                        ui.add_enabled_ui(Some(current_page) != Some(1), |ui|{
                                             if ui.button("<").clicked(){
                                                     
                                             }
                                         });
-                                        ui.add_enabled_ui(current_page != last_page, |ui| {
+                                        ui.add_enabled_ui(Some(current_page) != last_page, |ui| {
                                             if ui.button(">").clicked(){
                                                 
                                             }
@@ -534,160 +754,48 @@ impl eframe::App for Main{
                 });
                 
                     
-                
-                match self.translation{
-                    Translation::Sub => {
-                        if !self.episode_list.sub.is_empty(){
-                            ui.heading("Subbed Episodes");
-                            let selected_states = vec![false;self.episode_list.sub.clone().len()];
-                            for (i,episodes) in self.episode_list.sub.iter().rev().enumerate(){
-                                let is_selected = selected_states[i];
-                                if let Some(ep) = episodes{
-                                    if ui.selectable_label(is_selected, format!("Episode: {ep}")).clicked(){
-                                        self.selected_episode = ep.clone();
-                                        match get_episode_url(&self.selected_show.id, &"sub".to_string(), ep){
-                                        Ok(urls) =>{
-                                            self.selected_episode_urls = urls.clone();
-                                            //let child =process::Command::new("mpv").arg(&urls[2].source_url.clone()).spawn().expect("Failed to start mpv");
-
-                                        },
-                                        Err(e) => {
-                                            println!("{e}");
-                                        } 
+                self.play_translation(self.translation, ui);
+                // match self.translation{
+                //     Translation::Sub => {
+                //         self.play_translation(self.translation, ui);
+                //     },
+                //     Translation::Dub => {
+                //         if !self.episode_list.dub.is_empty(){
+                //             let selected_states = vec![false; self.episode_list.dub.clone().len()];
+                //             for (i,episodes) in self.episode_list.dub.iter().rev().enumerate(){
+                //                 let mut is_selected = selected_states[i];
+                //                 if let Some(ep) = episodes{
+                //                     if ui.selectable_label(is_selected, format!("Episode: {ep}")).clicked(){
+                //                         self.selected_episode = ep.clone();
                                         
-                                    }
-                                    }
-                                    // dbg!(&self.selected_episode);
-                                    // dbg!(&ep);
-                                 if self.selected_episode == ep.clone(){
-                                        ui.horizontal(|ui|{
-                                            ui.label("Sources: ");
-                                            let selected_url = vec![false; self.selected_episode_urls.clone().len()];
-                                            for (i,url) in self.selected_episode_urls.clone().iter().enumerate(){
-                                                let source_name = &url.0;
-                                                    match source_name.as_str(){
-                                                        // "Fm-Hls" will add later once set up
-                                                        "Mp4"|  "S-mp4" | "Yt-mp4" => {
-                                                            
-                                                            if ui.selectable_label(selected_url[i], match source_name.as_str(){
-                                                                "Mp4" =>  "Mp4Upload",
-                                                                "Fm-Hls" => "Filemoon",
-                                                                "S-mp4" => "Sharepoint", 
-                                                                "Yt-mp4" => "Yt",
-                                                                _=> "No Source available"
-                                                            }).clicked(){
-                                                                let episode_link = &url.1[0].1;
-                                                                    let media_title_arg = format!("--force-media-title=\"{}\": Episode {}", self.selected_show.name, self.selected_episode);
-                                                                    let mut refer_flag_arg = String::new();
-                                                                    match source_name.as_str() {
-                                                                        "Mp4" => refer_flag_arg = "--referrer=https://www.mp4upload.com".to_string(),
-                                                                        _ => ()
-
-                                                                    }
-                                                                    if self.player.spawned == true && self.player.process_id > 0{
-                                                                        #[cfg(unix)]
-                                                                        match process::Command::new("kill").args(&["-9", &self.player.process_id.to_string()]).output(){
-                                                                            Ok(process) => () ,
-                                                                            Err(e) => ()
-                                                                        };   
-                                                                        
-                                                                    }
-                                                                    match process::Command::new("mpv").arg("--tls-verify=no").arg(media_title_arg).arg(refer_flag_arg).arg(episode_link).spawn(){
-                                                                        Ok(spawned) => {
-                                                                            self.player.spawned= true;
-                                                                            self.player.process_id = spawned.id();
-                                                                            if self.previous_page == Pages::Anilist && !self.config.anilist.token.is_empty(){
-                                                                            dbg!(&self.anilist_selected_show);
-                                                                            if let Some(show_id) = &self.anilist_selected_show.id{
-                                                                                if self.anilist_selected_show.episodes.unwrap().to_string() != self.selected_episode{
-                                                                                    anilist::update_progress(&show_id, Some(&self.selected_episode), anilist::WatchStatus::Current, &self.config);
-                                                                                }else{
-                                                                                    anilist::update_progress(&show_id, Some(&self.selected_episode), anilist::WatchStatus::Completed, &self.config);
-                                                                                }
-
-                                                                                    
-                                                                                
-                                                                            }
-                                                                            
-                                                                        }
-                                                                            
-                                                                        },
-                                                                        Err(e) => {dbg!(e); ()}
-                                                                    }
-                                                                
-                                                            }
-                                                            ui.separator();
-                                                        },
-                                                        _=>{}
-                                                    }
-                                                
-                                                
-                                                    
-                                                    //
-                                                    //println!("{}",url.source_url);
-                                                    //let refer_flag_arg = "--referrer=https://www.mp4upload.com";
-
-                                                    //let spawn_player = process::Command::new("mpv").arg("--tls-verify=no").arg(media_title_arg).arg(&url.source_url.clone()).spawn();
-                                                    //match spawn_player{
-                                                    //    Ok(child) => {},
-                                                    //    Err(e)=> {println!("{e}");}
-                                                    //}
-                                                };
-                                                
-                      
-                                        });
-                                        
-                                    }
-                               }
-                               
-                            }
-
-                            if self.player.spawned == true{
-                                ui.label(format!("Now Playing Episode {}.", self.selected_episode));
-                            }
-                        } else {
-                            ui.label("No available episodes for selected translation.");
-                        }
-                        
-
-                    },
-                    Translation::Dub => {
-                        if !self.episode_list.dub.is_empty(){
-                            let selected_states = vec![false; self.episode_list.dub.clone().len()];
-                            for (i,episodes) in self.episode_list.dub.iter().rev().enumerate(){
-                                let mut is_selected = selected_states[i];
-                                if let Some(ep) = episodes{
-                                    if ui.selectable_label(is_selected, format!("Episode: {ep}")).clicked(){
-                                        self.selected_episode = ep.clone();
-                                        
-                                    }
-                                }
-                            }
-                        }else {
-                            ui.label("No available episodes for selected translation.");
-                        }
+                //                     }
+                //                 }
+                //             }
+                //         }else {
+                //             ui.label("No available episodes for selected translation.");
+                //         }
                         
                         
 
-                    },
-                    Translation::Raw => {
-                        if !self.episode_list.raw.is_empty(){
-                            let selected_states = vec![false;self.episode_list.raw.clone().len()];
-                            for (i,episodes) in self.episode_list.raw.iter().rev().enumerate(){
-                                let is_selected = selected_states[i];
-                                if let Some(ep) = episodes{
-                                    if ui.selectable_label(is_selected, format!("Episode: {ep}")).clicked(){
-                                        self.selected_episode = ep.clone();
-                                        get_episode_url(&self.selected_show.id, &"raw".to_string(), ep);
-                                    }
-                                }
-                            }
-                        }else {
-                            ui.label("No available episodes for selected translation.");
-                        }
+                //     },
+                //     Translation::Raw => {
+                //         if !self.episode_list.raw.is_empty(){
+                //             let selected_states = vec![false;self.episode_list.raw.clone().len()];
+                //             for (i,episodes) in self.episode_list.raw.iter().rev().enumerate(){
+                //                 let is_selected = selected_states[i];
+                //                 if let Some(ep) = episodes{
+                //                     if ui.selectable_label(is_selected, format!("Episode: {ep}")).clicked(){
+                //                         self.selected_episode = ep.clone();
+                //                         get_episode_url(&self.selected_show.id, &"raw".to_string(), ep);
+                //                     }
+                //                 }
+                //             }
+                //         }else {
+                //             ui.label("No available episodes for selected translation.");
+                //         }
 
-                    },
-                }
+                //     },
+                // }
 
                 // if !self.selected_episode.is_empty(){
                 //     ui.label(format!("Now playing episode {} of {}", self.selected_episode, self.selected_show.name));
@@ -774,141 +882,19 @@ impl eframe::App for Main{
 
                 ui.separator();
 
-                let media_list = &self.anilist_info.lists;
+                let media_list = &self.anilist_info.lists.clone();
                 
                 
                 for item in media_list{
                     match item.name.to_lowercase().as_str() {
                         "watching" => {
-                            egui::CollapsingHeader::new("Watching").id_salt("watching").show(ui, |ui| {
-                                
-                                egui::ScrollArea::vertical().id_salt("watching_scroll").max_height(250.0).show(ui, |ui|{
-                                    let selected_state = vec![false; item.entries.len()]; 
-                                    for (i,show) in item.entries.clone().into_iter().enumerate(){
-                                        if let Some(title) = &show.media.title.english{
-                                            if ui.selectable_label(selected_state[i], title).clicked(){
-                                                self.anilist_progress = show.clone();
-                                                if let Ok(searched_title) = search_anilist(title, &self.config){
-                                                    if  let Some(current_page) = searched_title.page_info.current_page{
-                                                        if current_page == 1{
-                                                        
-                                                        dbg!(&searched_title.media);
-                                                        if let Some(medias) = searched_title.media{
-                                                        if medias.len() > 0 {
-                                                            for media in medias{
-                                                                if let Some(title_searched) = &media.title{
-                                                                    if let Some(user_preferred) = &title_searched.user_preferred{
-                                                                        if user_preferred == title{
-                                                                            dbg!(&media);
-                                                                            self.anilist_selected_show = media.clone();
-                                                                            self.show_focus = true;
-                                                                            self.panel_extended = true;
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            
-                                                        } else {
-                                                            self.anilist_error = "Unable to find show".to_string();
-                                                        }
-                                                        }
-                                                        
-                                                    }
-                                                }
-                                                }
-                                            };
-                                            
-                                        }
-                                }
-                                });
-                                
-                            });
+                            self.anilist_show_status(item.clone(), ui);
                         },
                         "planning" => {
-                            egui::CollapsingHeader::new("Planning").id_salt("Planning").show(ui, |ui| {
-                                egui::ScrollArea::vertical().id_salt("planning_scroll").max_height(250.0).show(ui, |ui|{
-                                    let selected_state = vec![false; item.entries.len()]; 
-                                    for (i,show) in item.entries.clone().into_iter().enumerate(){
-                                        if let Some(title) = &show.media.title.english{
-                                            if ui.selectable_label(selected_state[i], title).clicked(){
-                                                self.anilist_progress = show.clone();
-                                                if let Ok(searched_title) = search_anilist(title, &self.config){
-                                                    if  let Some(current_page) = searched_title.page_info.current_page{
-                                                        if current_page == 1{
-                                                        
-                                                        dbg!(&searched_title.media);
-                                                        if let Some(medias) = searched_title.media{
-                                                        if medias.len() > 0 {
-                                                            for media in medias{
-                                                                if let Some(title_searched) = &media.title{
-                                                                    if let Some(user_preferred) = &title_searched.user_preferred{
-                                                                        if user_preferred == title{
-                                                                            dbg!(&media);
-                                                                            self.anilist_selected_show = media.clone();
-                                                                            self.show_focus = true;
-                                                                            self.panel_extended = true;
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            
-                                                        } else {
-                                                            self.anilist_error = "Unable to find show".to_string();
-                                                        }
-                                                        }
-                                                        
-                                                    }
-                                                }
-                                                }
-                                            };
-                                            
-                                        }
-                                }
-                                });
-                            });
+                            self.anilist_show_status(item.clone(), ui);
                         },
                         "completed" => {
-                            egui::CollapsingHeader::new("Completed").id_salt("Completed").show(ui, |ui| {
-                                egui::ScrollArea::vertical().id_salt("completed_scroll").max_height(250.0).show(ui, |ui|{
-                                    let selected_state = vec![false; item.entries.len()]; 
-                                    for (i,show) in item.entries.clone().into_iter().enumerate(){
-                                        if let Some(title) = &show.media.title.english{
-                                            if ui.selectable_label(selected_state[i], title).clicked(){
-                                                self.anilist_progress = show.clone();
-                                                if let Ok(searched_title) = search_anilist(title, &self.config){
-                                                    if  let Some(current_page) = searched_title.page_info.current_page{
-                                                        if current_page == 1{
-                                                        
-                                                        dbg!(&searched_title.media);
-                                                        if let Some(medias) = searched_title.media{
-                                                        if medias.len() > 0 {
-                                                            for media in medias{
-                                                                if let Some(title_searched) = &media.title{
-                                                                    if let Some(user_preferred) = &title_searched.user_preferred{
-                                                                        if user_preferred == title{
-                                                                            dbg!(&media);
-                                                                            self.anilist_selected_show = media.clone();
-                                                                            self.show_focus = true;
-                                                                            self.panel_extended = true;
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            
-                                                        } else {
-                                                            self.anilist_error = "Unable to find show".to_string();
-                                                        }
-                                                        }
-                                                        
-                                                    }
-                                                }
-                                                }
-                                            };
-                                            
-                                        }
-                                }
-                                });
-                            });
+                            self.anilist_show_status(item.clone(), ui);
                         },
                          _=> ()
                     }    
@@ -921,5 +907,4 @@ impl eframe::App for Main{
         });
     }
 }
-
 

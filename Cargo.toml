@@ -2,6 +2,9 @@
 name = "ani-search"
 version = "0.1.0"
 edition = "2024"
+authors = ["sentri"]
+description = "A desktop client that allows the user to search for and watch anime with Anilist integration."
+repository = "https://github.com/sentrisable/ani-search/"
 
 [dependencies]
 aes = "0.9.1"

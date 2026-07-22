@@ -10,13 +10,15 @@ pub struct AnilistVariables{
     pub user_id: i64,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum WatchStatus{
-    Current,
+    Watching,
     Repeating,
     Completed,
     Paused,
     Dropped,
-    Planning
+    Planning,
+    None
 }
 
 
@@ -111,8 +113,9 @@ pub fn update_progress(show_id: &i64, episode_number: Option<&String>, status: W
         "query" : r#"mutation($id:Int $mediaId:Int $status:MediaListStatus $score:Float $progress:Int $progressVolumes:Int $repeat:Int $private:Boolean $notes:String $customLists:[String]$hiddenFromStatusLists:Boolean $advancedScores:[Float]$startedAt:FuzzyDateInput $completedAt:FuzzyDateInput){SaveMediaListEntry(id:$id mediaId:$mediaId status:$status score:$score progress:$progress progressVolumes:$progressVolumes repeat:$repeat private:$private notes:$notes customLists:$customLists hiddenFromStatusLists:$hiddenFromStatusLists advancedScores:$advancedScores startedAt:$startedAt completedAt:$completedAt){id mediaId status score advancedScores progress progressVolumes repeat priority private hiddenFromStatusLists customLists notes updatedAt startedAt{year month day}completedAt{year month day}user{id name}media{id title{userPreferred english romaji}coverImage{large}type format status episodes volumes chapters averageScore popularity isAdult startDate{year}}}}"#,
         "variables" : {
             "status" : match status{
+                WatchStatus::None => "",
                 WatchStatus::Completed => "COMPLETED",
-                WatchStatus::Current => "CURRENT",
+                WatchStatus::Watching => "CURRENT",
                 WatchStatus::Dropped => "DROPPED",
                 WatchStatus::Paused => "PAUSED",
                 WatchStatus::Planning => "PLANNING",
