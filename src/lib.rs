@@ -1,49 +1,57 @@
 use std::{
-    error::Error, fs, io::{BufWriter, Read, Write, stdout}, path::*, process::Command, string, sync::mpsc::{Receiver, Sender}, time::Duration
-
+    collections::BTreeSet,
+    error::Error,
+    fs,
+    io::{BufWriter, Read, Write, stdout},
+    path::*,
+    process::Command,
+    string,
+    sync::mpsc::{Receiver, Sender},
+    time::Duration,
 };
 
-
 use base64::Engine;
+use chrono::format::parse;
+use curl::easy::{Easy2, Handler, List, ReadError, WriteError};
 use egui::Key::V;
 use hybrid_array::{ArraySize, typenum};
+use openssl_sys::EVP_MAC_CTX_new;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use openssl_sys::EVP_MAC_CTX_new;
 use tokio::io::repeat;
 use urlencoding::encode;
-use curl::easy::{Handler, Easy2, WriteError, ReadError, List};
 
-mod structs;
 mod apis;
+mod structs;
 
-pub use structs::*;
 pub use apis::*;
-
+pub use structs::*;
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct AppSettings{
-    
+pub struct AppSettings {
     pub allow_adult: bool,
     pub initialized: bool,
 }
 
-pub struct SettingsIter<'a>{
+pub struct SettingsIter<'a> {
     setting: &'a AppSettings,
     state: usize,
 }
 
-impl AppSettings{
-    pub fn iter(&self) -> SettingsIter{
-        SettingsIter { setting: self, state: 0}
+impl AppSettings {
+    pub fn iter(&self) -> SettingsIter {
+        SettingsIter {
+            setting: self,
+            state: 0,
+        }
     }
 }
 
-impl<'a> Iterator for SettingsIter<'a>{
+impl<'a> Iterator for SettingsIter<'a> {
     type Item = (&'static str, bool);
 
-    fn next(&mut self) -> Option<Self::Item>{
-        let result = match self.state{
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = match self.state {
             0 => Some(("Allow Adult", self.setting.allow_adult)),
             _ => None,
         };
@@ -51,146 +59,335 @@ impl<'a> Iterator for SettingsIter<'a>{
         result
     }
 }
-
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Aacrypto {
+    epoch: i32,
+    epoch_ms: i64,
+    grace_ms: i64,
+    switch_at: i64,
+    part_b: String,
+    part_a: Option<String>,
+}
+#[derive(Default, Debug)]
+pub struct AllAnimeKey {
+    pub epoch: i32,
+    pub part_a_hex: String,
+    pub part_b_hex: String,
+}
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct Config{
+pub struct Config {
     pub app_settings: AppSettings,
     pub anilist: AnilistVariables,
 }
 
-
-
-
-
-
 #[derive(PartialEq, Debug, Clone, Copy)]
-pub enum Translation{
+pub enum Translation {
     Sub,
     Dub,
-    Raw
+    Raw,
 }
 
-
-pub struct PostHandler{
+pub struct PostHandler {
     upload_data: String,
-    response_data: Vec<u8>
+    response_data: Vec<u8>,
 }
 
-impl Handler for PostHandler{
-    fn read(&mut self, data: &mut [u8])->Result<usize, ReadError>{
-        let size = self.upload_data.as_bytes().read(data).map_err(|_| ReadError::Abort)?;
-        Ok(size)    
+impl Handler for PostHandler {
+    fn read(&mut self, data: &mut [u8]) -> Result<usize, ReadError> {
+        let size = self
+            .upload_data
+            .as_bytes()
+            .read(data)
+            .map_err(|_| ReadError::Abort)?;
+        Ok(size)
     }
 
-    fn write(&mut self, data: &[u8]) ->Result <usize, WriteError>{
+    fn write(&mut self, data: &[u8]) -> Result<usize, WriteError> {
         self.response_data.extend_from_slice(data);
         Ok(data.len())
     }
 }
 
-pub enum MessageType{
+pub enum MessageType {
     Error,
-    Informational
+    Informational,
 }
 
-pub fn write_to_log(message: &str, message_type:MessageType)->Result<(), Box<dyn std::error::Error>>{
-    #[cfg(target_os="linux")]
+fn merge_to_key(part_a_hex: &str, part_b_hex: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let part_a = hex::decode(&part_a_hex)?;
+    let part_b = base64::prelude::BASE64_STANDARD.decode(part_b_hex)?;
+
+    let key: String = part_a
+        .iter()
+        .zip(part_b.iter())
+        .map(|(m_byte, p_byte)| format!("{:02x}", m_byte ^ p_byte))
+        .collect();
+    dbg!(&key);
+    Ok(key)
+}
+
+fn parse_chunks(
+    imm_url: &str,
+    unique_chunks: BTreeSet<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut chunk = String::new();
+
+    let mask_re = regex::Regex::new(r"[a-f0-9]{64}")?;
+
+    for c in unique_chunks {
+        if c.is_empty() {
+            continue;
+        }
+
+        let chunk_url = format!("{imm_url}{c}");
+
+        let payload = String::new();
+        let handler = PostHandler {
+            upload_data: payload.clone(),
+            response_data: Vec::new(),
+        };
+        let mut handle = Easy2::new(handler);
+        //handle.post(true)?;
+        //handle.post_field_size(payload.clone().as_bytes().len() as u64)?;
+
+        handle.url(&chunk_url)?;
+
+        handle.useragent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+        )?;
+
+        #[cfg(debug_assertions)]
+        handle.verbose(false)?;
+
+        handle.perform()?;
+
+        let contents = handle.get_ref();
+        let response = &std::str::from_utf8(&contents.response_data)?;
+        if !response.contains("__aaCrypto") {
+            continue;
+        }
+
+        let masks: Vec<&str> = mask_re.find_iter(*response).map(|m| m.as_str()).collect();
+
+        if masks.len() == 1 {
+            chunk = masks[0].to_string();
+
+            return Ok(chunk);
+        }
+    }
+    Ok(String::new())
+}
+
+fn curl_cdn_immutable(entry: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let immutable_url = "https://cdn.allanime.day/all/mk/_app/immutable/";
+
+    let payload = String::new();
+    let handler = PostHandler {
+        upload_data: payload.clone(),
+        response_data: Vec::new(),
+    };
+    let mut handle = Easy2::new(handler);
+    //handle.post(true)?;
+    //handle.post_field_size(payload.clone().as_bytes().len() as u64)?;
+
+    handle.url(format!("{immutable_url}{entry}").as_str())?;
+
+    handle.useragent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+    )?;
+
+    #[cfg(debug_assertions)]
+    handle.verbose(true)?;
+
+    handle.perform()?;
+
+    let contents = handle.get_ref();
+    let response = &std::str::from_utf8(&contents.response_data)?;
+    //dbg!(response);
+    let chunk_re = regex::Regex::new(r#"["']\.\./(chunks/[a-zA-Z0-9_.-]+\.js)["']"#)?;
+    let mut unique_chunks = BTreeSet::new();
+    for cap in chunk_re.captures_iter(*response) {
+        if let Some(chunk) = cap.get(1) {
+            unique_chunks.insert(chunk.as_str().to_string());
+        }
+    }
+    //dbg!(&unique_chunks);
+    let chunk = parse_chunks(immutable_url, unique_chunks)?;
+    if chunk.is_empty() {
+        return Err("Unable to parse chunks".into());
+    }
+    Ok(chunk)
+}
+
+pub fn get_allanime_key() -> Result<AllAnimeKey, Box<dyn std::error::Error>> {
+    let payload = String::new();
+    let handler = PostHandler {
+        upload_data: payload.clone(),
+        response_data: Vec::new(),
+    };
+    let mut handle = Easy2::new(handler);
+
+    //handle.post(true)?;
+    //handle.post_field_size(payload.clone().as_bytes().len() as u64)?;
+
+    handle.url("https://mkissa.to")?;
+
+    handle.useragent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+    )?;
+
+    #[cfg(debug_assertions)]
+    handle.verbose(true)?;
+
+    handle.perform()?;
+    let mut key_struct = AllAnimeKey::default();
+    let contents = handle.get_ref();
+    let response = &std::str::from_utf8(&contents.response_data)?;
+    //dbg!(response);
+
+    let aacrypto_re = regex::Regex::new(r#"window\.__aaCrypto\s*=\s*(\{[^}]*\})"#)?;
+    let appjs_re = regex::Regex::new(r#"_app/immutable/(entry/app\.[^"']+\.js)"#)?;
+
+    if let Some(caps) = aacrypto_re.captures(*response) {
+        let json: Aacrypto = serde_json::from_str(&caps[1]).unwrap();
+
+        if let Some(js_caps) = appjs_re.captures(*response) {
+            let entry = &js_caps[1];
+            let part_a_hex = curl_cdn_immutable(&entry)?;
+            key_struct.epoch = json.epoch;
+            key_struct.part_a_hex = part_a_hex;
+            key_struct.part_b_hex = json.part_b;
+        }
+    }
+    dbg!(&key_struct);
+    Ok(key_struct)
+}
+
+pub fn write_to_log(
+    message: &str,
+    message_type: MessageType,
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
     let path = "./logs/errors.log";
-    
-    #[cfg(target_os="windows")]
+
+    #[cfg(target_os = "windows")]
     let path = ".\\logs\\errors.log";
 
-    let mut log = std::fs::OpenOptions::new().append(true).create(true).open(path)?;
-    match message_type{
-        MessageType::Error =>{
+    let mut log = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)?;
+    match message_type {
+        MessageType::Error => {
             log.write_all(format!("ERROR: {} - {}", message, chrono::Local::now()).as_bytes())?;
-        },
-        MessageType::Informational=>{
+        }
+        MessageType::Informational => {
             log.write_all(format!("INFO: {} - {}", message, chrono::Local::now()).as_bytes())?;
         }
     }
     Ok(())
 }
 
-
-pub fn create_file(path: &str) ->Result<(), Box<dyn std::error::Error>>{
-    if !std::path::Path::new(path).exists(){
-        write_to_log(format!("Creating {path}...").as_str(), MessageType::Informational);
+pub fn create_file(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if !std::path::Path::new(path).exists() {
+        write_to_log(
+            format!("Creating {path}...").as_str(),
+            MessageType::Informational,
+        );
         fs::File::create_new(path)?;
-        write_to_log(format!("{path} created.").as_str(), MessageType::Informational);
-    }else {
+        write_to_log(
+            format!("{path} created.").as_str(),
+            MessageType::Informational,
+        );
+    } else {
         let message = format!("{path} already exists");
         write_to_log(&message, MessageType::Error);
     }
     Ok(())
 }
 
-fn get_filemoon_link(source_id: &str) -> Result<(), Box<dyn std::error::Error>>{
+fn get_filemoon_link(source_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let payload = String::new();
-        let handler = PostHandler{
-            upload_data: payload.clone(),
-            response_data: Vec::new()
-        };
-        let mut handle = Easy2::new(handler);
-        handle.referer("https://youtu-chan.com")?;
-        dbg!(&source_id);
-        let url = format!("https://allanime.day");
-        handle.url(&url)?;
+    let handler = PostHandler {
+        upload_data: payload.clone(),
+        response_data: Vec::new(),
+    };
+    let mut handle = Easy2::new(handler);
+    handle.referer("https://mkissa.to")?;
+    dbg!(&source_id);
+    let url = format!("https://allanime.day");
+    handle.url(&url)?;
 
-        handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
+    handle.useragent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+    )?;
 
-        #[cfg(debug_assertions)]
-        handle.verbose(true)?;
+    #[cfg(debug_assertions)]
+    handle.verbose(true)?;
 
-        handle.perform()?;
-        
+    handle.perform()?;
 
-        let contents = handle.get_ref();
-        let response =&std::str::from_utf8(&contents.response_data)?;
-        println!("{response}");    
-        Ok(())
+    let contents = handle.get_ref();
+    let response = &std::str::from_utf8(&contents.response_data)?;
+    println!("{response}");
+    Ok(())
 }
 
-fn extract_link(episode_link: &str, response: &str)->Result<Vec<(i32, String)>, Box<dyn std::error::Error>>{
+fn extract_link(
+    episode_link: &str,
+    response: &str,
+) -> Result<Vec<(i32, String)>, Box<dyn std::error::Error>> {
     use regex::Regex;
-    match episode_link{
-        x if x.contains("repackager.wixmp.com")=>{
-            let extracted_link = x.replace("repackager.wixmp.com/", "").split(".urlset").next().unwrap_or("").to_string();
+    match episode_link {
+        x if x.contains("repackager.wixmp.com") => {
+            let extracted_link = x
+                .replace("repackager.wixmp.com/", "")
+                .split(".urlset")
+                .next()
+                .unwrap_or("")
+                .to_string();
             let re = Regex::new(r".*/,[^/],/mp4.*").unwrap();
 
             let mut output: Vec<(i32, String)> = Vec::new();
 
-            if let Some(caps) = re.captures(x){
+            if let Some(caps) = re.captures(x) {
                 let csv_group = &caps[1];
-                for j in csv_group.split(','){
-                    if j.is_empty(){continue;}
-                    let formatted_line = format!("{} > {}", j , extracted_link).replace(",[^/]*", j);
-                    let numeric_key:i32 = j.chars().filter(|c| c.is_ascii_digit()).collect::<String>().parse()?;
+                for j in csv_group.split(',') {
+                    if j.is_empty() {
+                        continue;
+                    }
+                    let formatted_line = format!("{} > {}", j, extracted_link).replace(",[^/]*", j);
+                    let numeric_key: i32 = j
+                        .chars()
+                        .filter(|c| c.is_ascii_digit())
+                        .collect::<String>()
+                        .parse()?;
                     output.push((numeric_key, formatted_line));
                 }
-
             }
-            output.sort_by(|a,b| b.0.cmp(&a.0));
+            output.sort_by(|a, b| b.0.cmp(&a.0));
             Ok(output)
-        },
-        x if x.contains("master.m3u8")=>{
+        }
+        x if x.contains("master.m3u8") => {
             let re = Regex::new(r#"Referer":"([^"]*)""#)?;
-            let m3u8_refr = re.captures(response).map(|caps| caps[1].to_string()).unwrap_or_default();
+            let m3u8_refr = re
+                .captures(response)
+                .map(|caps| caps[1].to_string())
+                .unwrap_or_default();
             println!("{x}");
             let first_line = x.lines().next().unwrap_or("");
             let extract_link = first_line.split('>').nth(1).unwrap_or("");
-            let relative_link = match extract_link.rfind('/'){
-                Some(idx) => {
-                    &x[..idx+1]
-                },
-                None=> "",
+            let relative_link = match extract_link.rfind('/') {
+                Some(idx) => &x[..idx + 1],
+                None => "",
             };
 
             let payload = String::new();
-            let handler = PostHandler{
+            let handler = PostHandler {
                 upload_data: payload.clone(),
-                response_data: Vec::new()
+                response_data: Vec::new(),
             };
             let mut handle = Easy2::new(handler);
             handle.referer(&m3u8_refr)?;
@@ -198,27 +395,27 @@ fn extract_link(episode_link: &str, response: &str)->Result<Vec<(i32, String)>, 
             let mut headers = List::new();
             headers.append("Content-Type: application/json")?;
             handle.http_headers(headers)?;
-            
+
             //handle.post(true)?;
             //handle.post_field_size(payload.clone().as_bytes().len() as u64)?;
-            
-            
+
             handle.url(&extract_link)?;
 
-            handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
+            handle.useragent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+            )?;
 
             #[cfg(debug_assertions)]
             handle.verbose(true)?;
 
             handle.perform()?;
-            
 
             let contents = handle.get_ref();
-            let response =&std::str::from_utf8(&contents.response_data)?;
+            let response = &std::str::from_utf8(&contents.response_data)?;
             println!("{response}");
 
             Ok(Vec::new())
-        },
+        }
         x => {
             let link_vec = vec![(0, x.to_string())];
             Ok(link_vec)
@@ -226,19 +423,18 @@ fn extract_link(episode_link: &str, response: &str)->Result<Vec<(i32, String)>, 
     }
 }
 
-
-fn get_episode_link(source_id: &str) -> Result<Vec<(i32, String)>, Box<dyn std::error::Error>>{
+fn get_episode_link(source_id: &str) -> Result<Vec<(i32, String)>, Box<dyn std::error::Error>> {
     //todo!("Finish grabbing links for episodes");
-    
-    let ref_url = "https://youtu-chan.com";
-    let api_base =  "allanime.day";
-    match source_id.to_lowercase(){
-        x if x.contains("mp4upload")=>{
+
+    let ref_url = "https://mkissa.to";
+    let api_base = "allanime.day";
+    match source_id.to_lowercase() {
+        x if x.contains("mp4upload") => {
             println!("{x}");
             let payload = String::new();
-            let handler = PostHandler{
+            let handler = PostHandler {
                 upload_data: payload.clone(),
-                response_data: Vec::new()
+                response_data: Vec::new(),
             };
             let mut handle = Easy2::new(handler);
             handle.referer(ref_url)?;
@@ -250,26 +446,26 @@ fn get_episode_link(source_id: &str) -> Result<Vec<(i32, String)>, Box<dyn std::
             let mut headers = List::new();
             headers.append("Content-Type: application/json")?;
             handle.http_headers(headers)?;
-            
+
             //handle.post(true)?;
             //handle.post_field_size(payload.clone().as_bytes().len() as u64)?;
-            
-            
+
             handle.url(&x)?;
 
-            handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
+            handle.useragent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+            )?;
 
             #[cfg(debug_assertions)]
             handle.verbose(true)?;
 
             handle.perform()?;
-            
 
             let contents = handle.get_ref();
-            let response =&std::str::from_utf8(&contents.response_data)?;
+            let response = &std::str::from_utf8(&contents.response_data)?;
             //println!("{response}");
             let source_re = regex::Regex::new(r#".*src: "([^"]*)"\s*"#)?;
-            if let Some(caps) = source_re.captures(*response){
+            if let Some(caps) = source_re.captures(*response) {
                 let links = extract_link(&caps[1], "")?;
                 println!("{links:?}");
                 Ok(links)
@@ -277,19 +473,17 @@ fn get_episode_link(source_id: &str) -> Result<Vec<(i32, String)>, Box<dyn std::
                 Err("Unable to capture source link".into())
             }
 
-
             //Ok(String::new())
-        },
-        x if x.contains("tools.fast4speed.rsvp") =>{
+        }
+        x if x.contains("tools.fast4speed.rsvp") => {
             let episode_link = vec![(0, x)];
             Ok(episode_link)
-
-        },
+        }
         x => {
             let payload = String::new();
-            let handler = PostHandler{
+            let handler = PostHandler {
                 upload_data: payload.clone(),
-                response_data: Vec::new()
+                response_data: Vec::new(),
             };
             let mut handle = Easy2::new(handler);
             handle.referer(ref_url)?;
@@ -297,62 +491,130 @@ fn get_episode_link(source_id: &str) -> Result<Vec<(i32, String)>, Box<dyn std::
             let mut headers = List::new();
             headers.append("Content-Type: application/json")?;
             handle.http_headers(headers)?;
-            
+
             //handle.post(true)?;
             //handle.post_field_size(payload.clone().as_bytes().len() as u64)?;
-            
-            
+
             handle.url(&format!("https://{api_base}{x}"))?;
 
-            handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
+            handle.useragent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+            )?;
 
             #[cfg(debug_assertions)]
             handle.verbose(true)?;
 
             handle.perform()?;
-            
 
             let contents = handle.get_ref();
-            let response =&std::str::from_utf8(&contents.response_data)?;
+            let response = &std::str::from_utf8(&contents.response_data)?;
             let root: episode_links::Root = serde_json::from_str(response)?;
 
-
             let links = extract_link(&root.links[0].link, response)?;
-            
+
             //Ok(response.clone())
             Ok(links)
         }
     }
 }
 
-
-fn source_init(source_name: &str, source: &SourceUrl)->String{
-    if let Some(source_url) = &source.source_url{
-        if !source_url.starts_with("--"){
-            return source_url.clone()
-        } 
+fn source_init(source_name: &str, source: &SourceUrl) -> String {
+    if let Some(source_url) = &source.source_url {
+        if !source_url.starts_with("--") {
+            return source_url.clone();
+        }
 
         let payload = &source_url[2..];
-        let mut decoded = String::with_capacity(payload.len()/2);
+        let mut decoded = String::with_capacity(payload.len() / 2);
 
         let mut chars = payload.chars();
-        while let (Some(c1), Some(c2)) = (chars.next(), chars.next()){
+        while let (Some(c1), Some(c2)) = (chars.next(), chars.next()) {
             let pair: String = format!("{c1}{c2}");
 
-            let mapped_char = match pair.as_str(){
-                "79" => 'A', "7a" => 'B', "7b" => 'C', "7c" => 'D', "7d" => 'E', "7e" => 'F', "7f" => 'G',
-                "70" => 'H', "71" => 'I', "72" => 'J', "73" => 'K', "74" => 'L', "75" => 'M', "76" => 'N',
-                "77" => 'O', "68" => 'P', "69" => 'Q', "6a" => 'R', "6b" => 'S', "6c" => 'T', "6d" => 'U',
-                "6e" => 'V', "6f" => 'W', "60" => 'X', "61" => 'Y', "62" => 'Z',
-                "59" => 'a', "5a" => 'b', "5b" => 'c', "5c" => 'd', "5d" => 'e', "5e" => 'f', "5f" => 'g',
-                "50" => 'h', "51" => 'i', "52" => 'j', "53" => 'k', "54" => 'l', "55" => 'm', "56" => 'n',
-                "57" => 'o', "48" => 'p', "49" => 'q', "4a" => 'r', "4b" => 's', "4c" => 't', "4d" => 'u',
-                "4e" => 'v', "4f" => 'w', "40" => 'x', "41" => 'y', "42" => 'z',
-                "08" => '0', "09" => '1', "0a" => '2', "0b" => '3', "0c" => '4', "0d" => '5', "0e" => '6',
-                "0f" => '7', "00" => '8', "01" => '9',
-                "15" => '-', "16" => '.', "67" => '_', "46" => '~', "02" => ':', "17" => '/', "07" => '?',
-                "1b" => '#', "63" => '[', "65" => ']', "78" => '@', "19" => '!', "1c" => '$', "1e" => '&',
-                "10" => '(', "11" => ')', "12" => '*', "13" => '+', "14" => ',', "03" => ';', "05" => '=',
+            let mapped_char = match pair.as_str() {
+                "79" => 'A',
+                "7a" => 'B',
+                "7b" => 'C',
+                "7c" => 'D',
+                "7d" => 'E',
+                "7e" => 'F',
+                "7f" => 'G',
+                "70" => 'H',
+                "71" => 'I',
+                "72" => 'J',
+                "73" => 'K',
+                "74" => 'L',
+                "75" => 'M',
+                "76" => 'N',
+                "77" => 'O',
+                "68" => 'P',
+                "69" => 'Q',
+                "6a" => 'R',
+                "6b" => 'S',
+                "6c" => 'T',
+                "6d" => 'U',
+                "6e" => 'V',
+                "6f" => 'W',
+                "60" => 'X',
+                "61" => 'Y',
+                "62" => 'Z',
+                "59" => 'a',
+                "5a" => 'b',
+                "5b" => 'c',
+                "5c" => 'd',
+                "5d" => 'e',
+                "5e" => 'f',
+                "5f" => 'g',
+                "50" => 'h',
+                "51" => 'i',
+                "52" => 'j',
+                "53" => 'k',
+                "54" => 'l',
+                "55" => 'm',
+                "56" => 'n',
+                "57" => 'o',
+                "48" => 'p',
+                "49" => 'q',
+                "4a" => 'r',
+                "4b" => 's',
+                "4c" => 't',
+                "4d" => 'u',
+                "4e" => 'v',
+                "4f" => 'w',
+                "40" => 'x',
+                "41" => 'y',
+                "42" => 'z',
+                "08" => '0',
+                "09" => '1',
+                "0a" => '2',
+                "0b" => '3',
+                "0c" => '4',
+                "0d" => '5',
+                "0e" => '6',
+                "0f" => '7',
+                "00" => '8',
+                "01" => '9',
+                "15" => '-',
+                "16" => '.',
+                "67" => '_',
+                "46" => '~',
+                "02" => ':',
+                "17" => '/',
+                "07" => '?',
+                "1b" => '#',
+                "63" => '[',
+                "65" => ']',
+                "78" => '@',
+                "19" => '!',
+                "1c" => '$',
+                "1e" => '&',
+                "10" => '(',
+                "11" => ')',
+                "12" => '*',
+                "13" => '+',
+                "14" => ',',
+                "03" => ';',
+                "05" => '=',
                 "1d" => '%',
                 _ => ' ',
             };
@@ -360,25 +622,23 @@ fn source_init(source_name: &str, source: &SourceUrl)->String{
         }
 
         decoded.replace("/clock", "/clock.json")
-    }else {
-        return String::from("Unable to Parse Url")
+    } else {
+        return String::from("Unable to Parse Url");
     }
-    
 }
 
-
-pub fn generate_link(source: &SourceUrl) -> Result<Vec<(i32, String)>, Box<dyn std::error::Error>>{
-    if let Some(source_name) = &source.source_name{
-        match source_name.as_str(){
-            "Mp4" =>{
+pub fn generate_link(source: &SourceUrl) -> Result<Vec<(i32, String)>, Box<dyn std::error::Error>> {
+    if let Some(source_name) = &source.source_name {
+        match source_name.as_str() {
+            "Mp4" => {
                 let source_id = source_init("mp4upload", source);
                 let episode_link = get_episode_link(&source_id)?;
 
                 dbg!(&episode_link);
                 Ok(episode_link)
-            },
+            }
             // "Fm-Hls" => {
-                
+
             //     let source_id = source_init("Filemoon", source);
             //     dbg!(source_id);
             //     //get_filemoon_link(source_id.as_str());
@@ -390,62 +650,60 @@ pub fn generate_link(source: &SourceUrl) -> Result<Vec<(i32, String)>, Box<dyn s
 
                 dbg!(&episode_link);
                 Ok(episode_link)
-                },
+            }
             "S-mp4" => {
                 let source_id = source_init("sharepoint", source);
                 let episode_link = get_episode_link(&source_id)?;
-                
+
                 dbg!(&episode_link);
                 Ok(episode_link)
-                },
-                _ => {Ok(Vec::new())}      
+            }
+            _ => Ok(Vec::new()),
         }
     } else {
         Err("Unable to get Source Name".into())
     }
-
 }
 
-
-
-fn encrypt_key(key: &str) -> Vec<u8>{
-    use sha2::{Sha256, Digest};
+fn encrypt_key(key: &str) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(key);
     let hash_result = hasher.finalize();
-   
+
     hash_result.to_vec()
 }
 
 // fn decrypt_response(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<String,Box<dyn std::error::Error>> {
-   
-    
+
 //     use openssl::symm::{decrypt, Cipher};
 //     let
 //     let decoded_iv = hex::decode(iv)?;
-    
+
 //     let decrypted_bytes = decrypt(Cipher::aes_256_ctr(), key, Some(&decoded_iv), ciphertext)?;
-   
+
 //     let decrypted_text = String::from_utf8(decrypted_bytes)?;
-    
+
 //     Ok(decrypted_text)
 // }
 
-fn process_response(url_data: &episodes::URLData, key: &str)-> Result<episode_source::Root,Box<dyn std::error::Error>>{
+fn process_response(
+    url_data: &episodes::URLData,
+    key: &str,
+) -> Result<episode_source::Root, Box<dyn std::error::Error>> {
     use aes::cipher::{KeyIvInit, StreamCipher};
     type Aes256Ctr64Be = ctr::Ctr64BE<aes::Aes256>;
 
     let to_be_parsed = &url_data.tobeparsed;
     //println!("{to_be_parsed}");
     let bytes = base64::prelude::BASE64_STANDARD.decode(to_be_parsed)?;
-    
+
     let buffer = &bytes[1..13];
-    let mut ctr_block = [0u8;16];
+    let mut ctr_block = [0u8; 16];
     ctr_block[..12].copy_from_slice(buffer);
-    ctr_block[12..16].copy_from_slice(&[0x00,0x00,0x00,0x02]);
-    
-    
-    let ct_len = bytes.len()-16;
+    ctr_block[12..16].copy_from_slice(&[0x00, 0x00, 0x00, 0x02]);
+
+    let ct_len = bytes.len() - 16;
 
     let mut encrypted_buffer = bytes[13..(ct_len)].to_vec();
 
@@ -456,63 +714,63 @@ fn process_response(url_data: &episodes::URLData, key: &str)-> Result<episode_so
     let response = String::from_utf8(encrypted_buffer.to_vec())?;
 
     dbg!(&response);
-    let response_json: episode_source::Root= serde_json::from_str(&response)?;
+    let response_json: episode_source::Root = serde_json::from_str(&response)?;
     Ok(response_json)
 }
 
-fn get_aa_req(aa_key: &str, epoch: i32, build_id: i32, query_hash: &str)->Result<String, Box<dyn std::error::Error>>{
-    use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce, Key};
-    
-    use hybrid_array::{Array, sizes};
+fn get_aa_req(
+    aa_key: &str,
+    epoch: i32,
+    query_hash: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use aes_gcm::{
+        Aes256Gcm, Key, Nonce,
+        aead::{Aead, KeyInit},
+    };
+
     use chrono::Utc;
-    let ts = (Utc::now().timestamp()/300)*300*1000;
-    println!("{ts}");
+    use hybrid_array::{Array, sizes};
+    let ts = (Utc::now().timestamp() / 300) * 300 * 1000;
+    
 
     let decoded_key = hex::decode(aa_key)?;
 
-    let payload_iv = format!("{epoch}:{build_id}:{query_hash}:{ts}");
+    let payload_iv = format!("{epoch}{query_hash}:{ts}");
     let payload = json!({
         "v": 1,
         "ts": ts,
         "epoch": epoch,
-        "buildId": build_id,
         "qh": query_hash
-    }).to_string();
+    })
+    .to_string();
 
-
-    let encrypted_iv= encrypt_key(&payload_iv);
+    let encrypted_iv = encrypt_key(&payload_iv);
     let encrypted_bytes = &encrypted_iv[..12];
-
+    dbg!(&aa_key.as_bytes().len());
     // let key: &Array<u8, sizes::U32> = &Key::<Aes256Gcm>::try_from(&decoded_key as &[u8])?;
     let cipher = Aes256Gcm::new_from_slice(&decoded_key)?;
-    let nonce:&Array<u8, sizes::U12> = &Nonce::try_from(encrypted_bytes)?;
+    let nonce: &Array<u8, sizes::U12> = &Nonce::try_from(encrypted_bytes)?;
 
     let cipher_text = cipher.encrypt(nonce, payload.as_bytes())?;
 
-    let mut buffer = Vec::with_capacity(1+12+cipher_text.len());
+    let mut buffer = Vec::with_capacity(1 + 12 + cipher_text.len());
     buffer.push(0x01);
     buffer.extend_from_slice(encrypted_bytes);
     buffer.extend_from_slice(&cipher_text);
-    
-
 
     let b64_string = base64::prelude::BASE64_STANDARD.encode(&buffer);
-    
-    Ok(b64_string)
 
+    Ok(b64_string)
 }
 
-
-
-fn post_curl(payload: String) ->Result<String, Box<dyn std::error::Error>>{
-    
-    let ref_url = "https://youtu-chan.com";
-    let api_base =  "allanime.day";
+fn post_curl(payload: String) -> Result<String, Box<dyn std::error::Error>> {
+    let ref_url = "https://mkissa.to";
+    let api_base = "allanime.day";
     let api_url = format!("https://api.{}", api_base);
 
-    let handler = PostHandler{
+    let handler = PostHandler {
         upload_data: payload.clone(),
-        response_data: Vec::new()
+        response_data: Vec::new(),
     };
     let mut handle = Easy2::new(handler);
     handle.referer(ref_url)?;
@@ -520,32 +778,32 @@ fn post_curl(payload: String) ->Result<String, Box<dyn std::error::Error>>{
     let mut headers = List::new();
     headers.append("Content-Type: application/json")?;
     handle.http_headers(headers)?;
-    
+
     handle.post(true)?;
     handle.post_field_size(payload.clone().as_bytes().len() as u64)?;
-    
-    
+
     handle.url(&format!("{api_url}/api/"))?;
 
-    handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
+    handle.useragent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+    )?;
 
     #[cfg(debug_assertions)]
     handle.verbose(true)?;
 
     handle.perform()?;
-    
 
     let contents = handle.get_ref();
-    let response =&std::str::from_utf8(&contents.response_data)?.replace("_", "");
+    let response = &std::str::from_utf8(&contents.response_data)?.replace("_", "");
     Ok(response.clone())
 }
 
-
-
-pub fn get_shows(show: &String, translation_type: &Translation, config: &Config) -> Result<Vec<Edge>, Box<dyn std::error::Error>>{
-
-    let search_gql="query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } }}";
-    
+pub fn get_shows(
+    show: &String,
+    translation_type: &Translation,
+    config: &Config,
+) -> Result<Vec<Edge>, Box<dyn std::error::Error>> {
+    let search_gql = "query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } }}";
 
     let payload = json!({
         "variables" :{
@@ -564,61 +822,62 @@ pub fn get_shows(show: &String, translation_type: &Translation, config: &Config)
             "countryOrigin" : "ALL"
         },
         "query" : search_gql
-    }).to_string();
-    
+    })
+    .to_string();
+
     dbg!(&payload);
 
     //format!("{{\"variables\":{{\"search\":{{\"allowAdult\":true,\"allowUnknown\":false,\"query\":\"{show}\"}},\"limit\":40,\"page\":1,\"translationType\":\"{translation_type}\",\"countryOrigin\":\"ALL\"}},\"query\":\"{search_gql}\"}}");
 
     let response = post_curl(payload)?;
-    // let json: Value = serde_json::from_str(&response)?; 
+    // let json: Value = serde_json::from_str(&response)?;
     // println!("Response Body: {json:?}");
 
-    let data:shows::Root = serde_json::from_str(&response)?;
+    let data: shows::Root = serde_json::from_str(&response)?;
     dbg!(&data);
 
-    
     Ok(data.data.shows.edges)
 }
 
-pub fn get_episode_list(show_id: &String) -> Result<episodes::AvailableEpisodesDetail, Box<dyn std::error::Error>>{
-    let episode_list_gql = "query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}";
+pub fn get_episode_list(
+    show_id: &String,
+) -> Result<episodes::AvailableEpisodesDetail, Box<dyn std::error::Error>> {
+    let episode_list_gql =
+        "query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail }}";
 
-    let payload = format!("{{\"variables\":{{\"showId\":\"{show_id}\"}},\"query\":\"{episode_list_gql}\"}}");
+    let payload =
+        format!("{{\"variables\":{{\"showId\":\"{show_id}\"}},\"query\":\"{episode_list_gql}\"}}");
 
     let response = post_curl(payload)?;
     // let json:Value = serde_json::from_str(&response)?;
     // println!("{:?}", json);
 
-    let data:episodes::Root = serde_json::from_str(&response)?;
+    let data: episodes::Root = serde_json::from_str(&response)?;
     dbg!(&data);
 
-
     Ok(data.data.show.available_episodes_detail)
-
 }
 
+pub fn get_episode_url(
+    show_id: &String,
+    translation_type: &String,
+    episode_num: &String,
+) -> Result<Vec<(String, Vec<(i32, String)>)>, Box<dyn std::error::Error>> {
+    let episode_embed_gql = "query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls }}";
+    let key_struct = get_allanime_key()?;
 
+    let key = merge_to_key(&key_struct.part_a_hex, &key_struct.part_b_hex)?;
 
-pub fn get_episode_url(show_id: &String, translation_type: &String,  episode_num: &String)->Result<Vec<(String,Vec<(i32,String)>)>, Box<dyn std::error::Error>>{
+    let query_hash = "f4662f4b7510b26795dd53ef824a0bf1740fbbc5d1273fab18222ac831bca8d0";
 
-    let episode_embed_gql="query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls }}";
-    
-    let epoch = 6885;
-    let build_id = 64;
-    let key = "ff102360a5065bb72fc128f7efa5042dbf4db582e5c58754078265926a76bfd8";
-    let query_hash = "d405d0edd690624b66baba3068e0edc3ac90f1597d898a1ec8db4e5c43c00fec";
-    
-
-    //{\"persistedQuery\":{\"version\":1,\"sha256Hash\":\"$allanime_query_hash\"}, \"aaReq\":\"$(get_aa_req)\"}
-    let aa_req = get_aa_req(key, epoch, build_id, query_hash)?;
-    //let aa_req = "Ab2YhqeMcQIxhA60YBrlJAPsZz8ar1ekpoZWbwjwuWdH2mfeYnGG4gx1WsLTxHAzhULq9ddLXYNI9RLQdfI/lfoIvBSvEsUq5BsvLNfF3u6PcOUwhouC51CrrH00BHYR+4KHz4t56ZDsJFThDEFok5RiyHK2N2HImm3XglhXZ7nfmgT08m4mzt9AZ20mC4ueZGnffF7y3LE5/7o=";
+    let aa_req = get_aa_req(&key, key_struct.epoch, query_hash)?;
     dbg!(&aa_req);
     let query_vars = json!({
         "showId": show_id,
         "translationType": translation_type,
         "episodeString": episode_num
-    }).to_string();
+    })
+    .to_string();
     //let query_vars=format!("{{\"showId\":\"{show_id}\",\"translationType\":\"{translation_type}\",\"episodeString\":\"{episode_num}\"}}");
     let query_ext = json!({
         "persistedQuery" : {
@@ -626,157 +885,160 @@ pub fn get_episode_url(show_id: &String, translation_type: &String,  episode_num
             "sha256Hash": query_hash
         },
         "aaReq": aa_req
-    }).to_string();
+    })
+    .to_string();
     //let query_ext=format!("{{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"{query_hash}\"}}, \"aaReq\":\"{aa_req}\" }}");
-    
-    let payload = format!("variables={}&extensions={}", encode(&query_vars), encode(&query_ext));
+
+    let payload = format!(
+        "variables={}&extensions={}",
+        encode(&query_vars),
+        encode(&query_ext)
+    );
     dbg!(&payload);
 
     let ref_url = "https://mkissa.to";
-    let api_base =  "allanime.day";
-    let api_url = format!("https://api.{}", api_base);
+    let api_base = "allanime.day";
+    let api_url = format!("https://api.mkissa.net");
 
-    let handler = PostHandler{
+    let handler = PostHandler {
         upload_data: payload.clone(),
-        response_data: Vec::new()
+        response_data: Vec::new(),
     };
 
-    
     let mut handle = Easy2::new(handler);
-
-
 
     handle.referer(ref_url)?;
 
     let mut headers = List::new();
     headers.append("Content-Type: application/json")?;
     handle.http_headers(headers)?;
-    
+
     handle.get(true)?;
     //handle.post_field_size(payload.as_bytes().len() as u64)?;
-    
-    
+
     handle.url(&format!("{api_url}/api?{payload}"))?;
 
-    handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
+    handle.useragent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+    )?;
 
     handle.verbose(false)?;
 
     handle.perform()?;
-    
 
     let contents = handle.get_ref();
-    let response =std::str::from_utf8(&contents.response_data)?;
+    let response = std::str::from_utf8(&contents.response_data)?;
     dbg!(&response);
-    
+
     let root: episodes::URLRoot = serde_json::from_str(response)?;
     // if root.data.tobeparsed.is_empty(){
     //     let payload = format!("{{\"variables\":{query_vars},\"query\":\"{episode_embed_gql}\" }}");
     //     let response = post_curl(payload)?;
     //     let
     // } else {
-    let response = process_response(&root.data, key)?;
-    if let Some(episode) = response.episode{
-        if let Some(source_url) = episode.source_urls{
-            let mut urls:Vec<(String,Vec<(i32,String)>)> = Vec::new();
-            for url in source_url{
-                let source_name = match &url.source_name{
+    let response = process_response(&root.data, &key)?;
+    if let Some(episode) = response.episode {
+        if let Some(source_url) = episode.source_urls {
+            let mut urls: Vec<(String, Vec<(i32, String)>)> = Vec::new();
+            for url in source_url {
+                let source_name = match &url.source_name {
                     Some(source) => source,
-                    None => "No Source available"
+                    None => "No Source available",
                 };
                 dbg!(&source_name);
                 let episode_link = generate_link(&url)?;
                 urls.push((source_name.to_string(), episode_link));
-                
             }
             Ok(urls)
         } else {
             Err("Unable to get source Urls".into())
         }
-        
     } else {
         Err("Unable to get Episode Information".into())
     }
-   
-//}
 
+    //}
 }
 
-pub fn get_next_episode_release(shows: &Edge) -> Result<animeschedule::Anime, Box<dyn std::error::Error>>{
-    
+pub fn get_next_episode_release(
+    shows: &Edge,
+) -> Result<animeschedule::Anime, Box<dyn std::error::Error>> {
     let payload = String::new();
-    let url = format!("https://animeschedule.net/api/v3/anime?q={}",shows.name.replace(" ", "+"));
-    let handler = PostHandler{
+    let url = format!(
+        "https://animeschedule.net/api/v3/anime?q={}",
+        shows.name.replace(" ", "+")
+    );
+    let handler = PostHandler {
         upload_data: payload.clone(),
-        response_data: Vec::new()
+        response_data: Vec::new(),
     };
     let mut handle = Easy2::new(handler);
     //handle.referer(ref_url)?;
- 
+
     let mut headers = List::new();
 
     headers.append("Content-Type: application/json")?;
     handle.http_headers(headers)?;
-    // 
+    //
     //handle.post(true)?;
     //handle.post_field_size(payload.clone().as_bytes().len() as u64)?;
-    // 
+    //
     handle.get(true)?;
     handle.url(&url)?;
- 
-    handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
- 
+
+    handle.useragent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+    )?;
+
     handle.verbose(false)?;
- 
+
     handle.perform()?;
 
     let contents = handle.get_ref();
-    let response =&std::str::from_utf8(&contents.response_data)?.replace("_", "");
-    
+    let response = &std::str::from_utf8(&contents.response_data)?.replace("_", "");
+
     //println!("{}", response);
     let data: animeschedule::Root = serde_json::from_str(response)?;
     let show_info = data.anime[0].clone();
     //Ok(response.clone())
-     Ok(show_info)
+    Ok(show_info)
 }
 
-
-
-pub fn get_config() ->Result<Config, Box<dyn std::error::Error>>{
+pub fn get_config() -> Result<Config, Box<dyn std::error::Error>> {
     let variables = load_setting_file();
 
-    match variables{
-        Ok(v) =>{
-            if v.is_empty(){
+    match variables {
+        Ok(v) => {
+            if v.is_empty() {
                 let config: Config = Config::default();
                 Ok(config)
             } else {
-                if let Ok(values) = toml::from_str(&v){
+                if let Ok(values) = toml::from_str(&v) {
                     let config: Config = values;
                     Ok(config)
                 } else {
                     Err("Unable to deserialize settings".into())
                 }
             }
-        },
-        Err(e)=>Err(e.into())
+        }
+        Err(e) => Err(e.into()),
     }
 }
 
-
-pub fn update_settings(config: &Config){
-    #[cfg(target_os="windows")]
+pub fn update_settings(config: &Config) {
+    #[cfg(target_os = "windows")]
     let path = ".\\Settings.toml";
-    
-    #[cfg(target_os="linux")]
+
+    #[cfg(target_os = "linux")]
     let path = "./Settings.toml";
 
-    if let Ok(toml_string) = toml::to_string(&config){
-        
-        if let Ok(mut file) = std::fs::OpenOptions::new().write(true).truncate(true).open(path)
+    if let Ok(toml_string) = toml::to_string(&config) {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)
         {
             file.write_all(&toml_string.as_bytes());
-
         } else {
             write_to_log("Unable to write to Settings.toml", MessageType::Error);
         }
@@ -785,65 +1047,53 @@ pub fn update_settings(config: &Config){
     }
 }
 
-pub fn load_setting_file()->Result<String, Box<dyn std::error::Error>>{
-    #[cfg(target_os="windows")]
+pub fn load_setting_file() -> Result<String, Box<dyn std::error::Error>> {
+    #[cfg(target_os = "windows")]
     let file = ".\\Settings.toml";
-    
-    #[cfg(target_os="linux")]
+
+    #[cfg(target_os = "linux")]
     let file = "./Settings.toml";
 
     create_file(file);
 
-    match std::fs::File::open(file){
-        Ok(settings) =>{
-            match fs::read_to_string(file){
-                Ok(contents) => {
-                    Ok(contents)
-                }, 
-                Err(e) => Err(e.into())
-            }
-            
+    match std::fs::File::open(file) {
+        Ok(settings) => match fs::read_to_string(file) {
+            Ok(contents) => Ok(contents),
+            Err(e) => Err(e.into()),
         },
-        Err(e) => Err(e.into())
+        Err(e) => Err(e.into()),
     }
-
-    
-
 }
 
-pub fn output_json(json:Value, path: &str){
+pub fn output_json(json: Value, path: &str) {
     let file = std::fs::File::create(path).expect("unable to create file.");
     serde_json::to_writer_pretty(BufWriter::new(file), &json);
 }
 
-pub fn capitalize_word(input: &str) -> String{
+pub fn capitalize_word(input: &str) -> String {
     let mut chars = input.chars();
-    match chars.next(){
+    match chars.next() {
         None => String::new(),
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str()
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
     }
-
 }
 
-fn clean_string(input: &str) -> String{
-    let result:String = input
-    .chars()
-    .filter(|c| c.is_alphanumeric() || c.is_whitespace())
-    .collect();
+fn clean_string(input: &str) -> String {
+    let result: String = input
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect();
 
     result
 }
 
-pub fn compare_names(a: &Edge, b: &str) -> bool{
-    
+pub fn compare_names(a: &Edge, b: &str) -> bool {
     let clean_a = clean_string(&a.name);
     let clean_b = clean_string(b);
     dbg!(&clean_b);
-    if clean_a.to_lowercase() == clean_b.to_lowercase(){
+    if clean_a.to_lowercase() == clean_b.to_lowercase() {
         true
     } else {
         false
     }
-    
-
 }

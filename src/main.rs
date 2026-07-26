@@ -2,6 +2,8 @@
 
 use std::{time::Duration, sync::{mpsc::{Receiver, Sender}, Arc, Mutex}, task, process};
 
+#[cfg(debug_assertions)]
+use ani_search::get_allanime_key;
 use eframe::{egui, wgpu::rwh::RawDisplayHandle::UiKit};
 
 use egui::{ComboBox, TextBuffer};
@@ -52,7 +54,9 @@ enum Pages{
     Show,
     APIAuth,
     Settings,
-    Anilist
+    Anilist,
+    #[cfg(debug_assertions)]
+    Debug
 }
 
 impl Pages{
@@ -178,6 +182,11 @@ impl Main{
                     // dbg!(&self.selected_episode);
                     // dbg!(&ep);
                     if self.selected_episode == ep.clone(){
+                        if self.selected_episode_urls.is_empty(){
+                                ui.label("Collecting Episode Links...");
+                            }else {
+
+                            
                         ui.horizontal(|ui|{
                             ui.label("Sources: ");
                             let selected_url = vec![false; self.selected_episode_urls.clone().len()];
@@ -257,7 +266,7 @@ impl Main{
                         
                     }
                 }
-                
+                    }
             }
 
             if self.player.spawned == true{
@@ -356,6 +365,10 @@ impl eframe::App for Main{
                 if ui.button("Settings").clicked(){
                     self.previous_page = self.pages;
                     self.pages = Pages::Settings;
+                }
+                #[cfg(debug_assertions)]
+                if ui.button("DEBUG").clicked(){
+                    self.pages = Pages::Debug;
                 }
                 if ui.button("Quit").clicked(){
                     ui.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -547,6 +560,8 @@ impl eframe::App for Main{
             Pages::APIAuth => (),
             Pages::Settings => (),
             Pages::Show => (),
+                #[cfg(debug_assertions)]
+            Pages::Debug => (),
         }
     });
 
@@ -900,7 +915,13 @@ impl eframe::App for Main{
                     }    
                 }
                 
+            },
+            #[cfg(debug_assertions)]
+            Pages::Debug=>{
+            if ui.button("get AllAnime Key").clicked(){
+                get_allanime_key();
             }
+}
 
             
             
