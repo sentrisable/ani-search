@@ -10,7 +10,9 @@ use std::{
     time::Duration,
 };
 
+
 use base64::Engine;
+
 use chrono::format::parse;
 use curl::easy::{Easy2, Handler, List, ReadError, WriteError};
 use egui::Key::V;
@@ -23,9 +25,17 @@ use urlencoding::encode;
 
 mod apis;
 mod structs;
+mod providers;
 
 pub use apis::*;
 pub use structs::*;
+pub use providers::*;
+
+
+const DEFAULT_AA_API:&str = "https://api.mkissa.net";
+const DEFAULT_REF_URL:&str = "https://mkissa.to";
+const DEFAULT_AGENT:&str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0";
+
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct AppSettings {
@@ -59,21 +69,14 @@ impl<'a> Iterator for SettingsIter<'a> {
         result
     }
 }
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Aacrypto {
-    epoch: i32,
-    epoch_ms: i64,
-    grace_ms: i64,
-    switch_at: i64,
-    part_b: String,
-    part_a: Option<String>,
-}
+
 #[derive(Default, Debug)]
 pub struct AllAnimeKey {
-    pub epoch: i32,
-    pub part_a_hex: String,
-    pub part_b_hex: String,
+    epoch: i32,
+    mask: String,
+    lane: String,
+    build_id: String,
+    part_b: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -95,7 +98,7 @@ pub struct PostHandler {
 }
 
 impl Handler for PostHandler {
-    fn read(&mut self, data: &mut [u8]) -> Result<usize, ReadError> {
+    fn read(&mut self, data: &mut [u8]) -> std::result::Result<usize, ReadError> {
         let size = self
             .upload_data
             .as_bytes()
@@ -104,7 +107,7 @@ impl Handler for PostHandler {
         Ok(size)
     }
 
-    fn write(&mut self, data: &[u8]) -> Result<usize, WriteError> {
+    fn write(&mut self, data: &[u8]) -> std::result::Result<usize, WriteError> {
         self.response_data.extend_from_slice(data);
         Ok(data.len())
     }
@@ -113,6 +116,89 @@ impl Handler for PostHandler {
 pub enum MessageType {
     Error,
     Informational,
+}
+
+fn generate_epoch()-> i64{
+    let now_ms =chrono::Utc::now().timestamp() * 1000;
+    let epoch = now_ms / 259200000;
+    if (now_ms - epoch * 259200000) < 86400000  &&  epoch > 0 {
+        return epoch-1;
+    }
+        epoch
+}
+
+fn generate_mask(build_id: &str) -> String{
+    let b64_lines = [
+        "12eJyE2wzfY=",
+"nWIlTqF9f5E=",
+"7f6CmXtAgpY=",
+"oR/792BJ+Sc=",
+    ];
+
+    let mut hex_key = String::new();
+    let build_id_bytes = build_id.as_bytes();
+    let build_id_len = build_id_bytes.len();
+
+    if build_id_len == 0{
+        return hex_key;
+    }
+    for (block,b64_str) in b64_lines.iter().enumerate(){
+     
+        if let Ok(decoded_bytes) = base64::prelude::BASE64_STANDARD.decode(b64_str){
+            
+            for (byte, &embedded) in decoded_bytes.iter().enumerate(){
+                let index = block * 8 + byte;
+                let c_byte = build_id_bytes[index % build_id_len];
+
+                let build_mask_byte = c_byte ^ (((index * 17) +31)&255) as u8;
+                let tweak = (((block * 41) + (byte * 7)) & 255) as u8;
+
+                let value = embedded ^ build_mask_byte ^ tweak;
+
+                hex_key.push_str(&format!("{:02x}", value));
+            
+            }
+        }    
+    }
+    hex_key
+
+}
+
+
+fn generate_boot(build_id: &str, mask: &str, epoch: i32, lane: Option<&str>) -> Result<String, Box<dyn std::error::Error>>{
+    use sha2::Sha256;
+    use hmac::{Hmac, Mac, KeyInit};
+    type HmacSha256 = Hmac<Sha256>;
+
+    let mask_bytes = hex::decode(mask)?;
+
+    let mut mac1 = HmacSha256::new_from_slice(&mask_bytes)?;
+
+    let first_payload = format!("aa-boot:{build_id}");
+
+    mac1.update(first_payload.as_bytes());
+
+    let hmac_key_bytes = mac1.finalize().into_bytes();
+
+    let mut payload = format!("{build_id}:mkissa:mkissa.to:{epoch}");
+
+    if let Some(l) =lane{
+        if !l.is_empty(){
+            payload.push_str(&format!(":{l}"));
+
+        }
+    }
+    
+    let mut mac2 = HmacSha256::new_from_slice(&hmac_key_bytes)?;
+    mac2.update(payload.as_bytes());
+    let final_bytes = mac2.finalize().into_bytes();
+
+    let hex_key = hex::encode(final_bytes);
+    Ok(hex_key)
+
+
+
+
 }
 
 fn merge_to_key(part_a_hex: &str, part_b_hex: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -131,11 +217,14 @@ fn merge_to_key(part_a_hex: &str, part_b_hex: &str) -> Result<String, Box<dyn st
 fn parse_chunks(
     imm_url: &str,
     unique_chunks: BTreeSet<String>,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let mut chunk = String::new();
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let mut build_id_mask:Vec<String> = vec![];
+    let mut lane_mask:Vec<String> = vec![];
 
-    let mask_re = regex::Regex::new(r"[a-f0-9]{64}")?;
 
+    
+    let build_id_re = regex::Regex::new(r#".*!=="string"\?"([0-9]+)".*"#)?;
+    let lane_re = regex::Regex::new(r#".*const ..="(k[0-9]+).*"#)?;
     for c in unique_chunks {
         if c.is_empty() {
             continue;
@@ -163,24 +252,30 @@ fn parse_chunks(
 
         handle.perform()?;
 
+        
+
+
         let contents = handle.get_ref();
         let response = &std::str::from_utf8(&contents.response_data)?;
-        if !response.contains("__aaCrypto") {
-            continue;
+        //dbg!(response);
+        if let Some(caps) = build_id_re.captures(response){
+            
+            dbg!(&caps[1]);
+            build_id_mask.push(caps[1].to_string());
+        }
+        if let Some(caps) = lane_re.captures(response){
+            dbg!(&caps[1]);
+            lane_mask.push(caps[1].to_string());
         }
 
-        let masks: Vec<&str> = mask_re.find_iter(*response).map(|m| m.as_str()).collect();
-
-        if masks.len() == 1 {
-            chunk = masks[0].to_string();
-
-            return Ok(chunk);
+        if lane_mask.len() ==1 && build_id_mask.len() == 1{
+            return Ok((lane_mask[0].clone(), build_id_mask[0].clone()));
         }
     }
-    Ok(String::new())
+    Ok((String::new(), String::new()))
 }
 
-fn curl_cdn_immutable(entry: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn curl_cdn_immutable(entry: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
     let immutable_url = "https://cdn.allanime.day/all/mk/_app/immutable/";
 
     let payload = String::new();
@@ -215,11 +310,52 @@ fn curl_cdn_immutable(entry: &str) -> Result<String, Box<dyn std::error::Error>>
     }
     //dbg!(&unique_chunks);
     let chunk = parse_chunks(immutable_url, unique_chunks)?;
-    if chunk.is_empty() {
+    if chunk.0.is_empty() || chunk.1.is_empty() {
         return Err("Unable to parse chunks".into());
     }
+
+
     Ok(chunk)
 }
+
+fn get_boot_resp(build_id: &str, boot: &str, lane: &str)->Result<String, Box<dyn std::error::Error>>{
+    let payload = String::new();
+    let handler = PostHandler{
+        upload_data: payload.clone(),
+        response_data: Vec::new()
+    };
+
+    let mut handle = Easy2::new(handler);
+    handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
+    
+
+    let mut headers = List::new();
+    headers.append(&format!("x-build-id: {build_id}"))?;
+    headers.append(&format!("x-aa-boot: {boot}"))?;
+    headers.append(&format!("Origin: {DEFAULT_REF_URL}"))?;
+    handle.http_headers(headers)?;
+
+    handle.referer(DEFAULT_REF_URL)?;
+    
+    handle.url(&format!("{DEFAULT_AA_API}/client-crypto/v1/bootstrap?buildId={build_id}&k={lane}"))?;
+
+    handle.perform()?;
+
+    let contents = handle.get_ref();
+    let response = &std::str::from_utf8(&contents.response_data)?;
+
+    let json:Value = serde_json::from_str(response)?;
+
+    let part_b = match &json["partB"].as_str(){
+        Some(str) => str.to_string(),
+        None=> String::new()
+    };
+    
+
+    Ok(part_b)
+}
+
+
 
 pub fn get_allanime_key() -> Result<AllAnimeKey, Box<dyn std::error::Error>> {
     let payload = String::new();
@@ -247,21 +383,28 @@ pub fn get_allanime_key() -> Result<AllAnimeKey, Box<dyn std::error::Error>> {
     let response = &std::str::from_utf8(&contents.response_data)?;
     //dbg!(response);
 
-    let aacrypto_re = regex::Regex::new(r#"window\.__aaCrypto\s*=\s*(\{[^}]*\})"#)?;
-    let appjs_re = regex::Regex::new(r#"_app/immutable/(entry/app\.[^"']+\.js)"#)?;
+   let appjs_re = regex::Regex::new(r#"_app/immutable/(entry/app\.[^"']+\.js)"#)?;
 
-    if let Some(caps) = aacrypto_re.captures(*response) {
-        let json: Aacrypto = serde_json::from_str(&caps[1]).unwrap();
+    let entry = match appjs_re.captures(*response) {
+        Some(js_caps) => js_caps[1].to_string(),
+        None => String::new()
 
-        if let Some(js_caps) = appjs_re.captures(*response) {
-            let entry = &js_caps[1];
-            let part_a_hex = curl_cdn_immutable(&entry)?;
-            key_struct.epoch = json.epoch;
-            key_struct.part_a_hex = part_a_hex;
-            key_struct.part_b_hex = json.part_b;
-        }
-    }
-    dbg!(&key_struct);
+    };
+    let (lane, build_id) = curl_cdn_immutable(&entry)?;
+    let epoch = generate_epoch() as i32;
+    let mask = generate_mask(&build_id);
+    let boot = generate_boot(&build_id, &mask, epoch, Some(&lane))?;    
+    let part_b = get_boot_resp(&build_id, &boot, &lane)?;
+    let part_b_decoded = base64::prelude::BASE64_STANDARD.decode(part_b)?;
+    let hex_part_b = hex::encode(part_b_decoded);
+
+    let key_struct = AllAnimeKey { 
+        epoch, 
+        mask, 
+        lane, 
+        build_id, 
+        part_b: hex_part_b 
+    };
     Ok(key_struct)
 }
 
@@ -714,14 +857,43 @@ fn process_response(
     let response = String::from_utf8(encrypted_buffer.to_vec())?;
 
     dbg!(&response);
+    let json: Value = serde_json::from_str(&response)?;
     let response_json: episode_source::Root = serde_json::from_str(&response)?;
+    output_json(json, "./response.json");
     Ok(response_json)
 }
 
+fn process_key(key_struct: &AllAnimeKey)->Result<String, Box<dyn std::error::Error>>{
+    dbg!(&key_struct.mask);
+    dbg!(&key_struct.part_b);
+    
+    let mut key = String::new();
+    let hex_b = &key_struct.part_b;
+
+    for i in (0..64).step_by(2){
+        if i+2 <= key_struct.mask.len() && i+2 <= key_struct.part_b.len(){
+            let m_slice = &key_struct.mask[i..i+2];
+            let p_slice = &hex_b[i..i+2];
+
+            let m_byte = u8::from_str_radix(m_slice, 16)?;
+            let p_byte = u8::from_str_radix(p_slice, 16)?;
+            
+
+            let res_dec = m_byte^p_byte;
+
+            key.push_str(&format!("{:02x}",res_dec));
+        }
+        
+    }
+    dbg!(&key);
+    Ok(key)
+    
+}
+
 fn get_aa_req(
-    aa_key: &str,
-    epoch: i32,
+    key:&str,
     query_hash: &str,
+    key_struct: &AllAnimeKey
 ) -> Result<String, Box<dyn std::error::Error>> {
     use aes_gcm::{
         Aes256Gcm, Key, Nonce,
@@ -730,30 +902,35 @@ fn get_aa_req(
 
     use chrono::Utc;
     use hybrid_array::{Array, sizes};
+    
+    
+    
     let ts = (Utc::now().timestamp() / 300) * 300 * 1000;
     
+    let payload_iv = format!("{}:{}:{}", key_struct.epoch, query_hash, ts);
+    
+    let encrypted_iv = encrypt_key(&payload_iv);
+    let encrypted_bytes = &encrypted_iv[0..12];
 
-    let decoded_key = hex::decode(aa_key)?;
-
-    let payload_iv = format!("{epoch}{query_hash}:{ts}");
     let payload = json!({
         "v": 1,
         "ts": ts,
-        "epoch": epoch,
-        "qh": query_hash
+        "epoch": key_struct.epoch,
+        "buildId": key_struct.build_id,
+        "qh": query_hash,
+        "k" : key_struct.lane,
     })
     .to_string();
 
-    let encrypted_iv = encrypt_key(&payload_iv);
-    let encrypted_bytes = &encrypted_iv[..12];
-    dbg!(&aa_key.as_bytes().len());
-    // let key: &Array<u8, sizes::U32> = &Key::<Aes256Gcm>::try_from(&decoded_key as &[u8])?;
-    let cipher = Aes256Gcm::new_from_slice(&decoded_key)?;
+    let decoded_key = hex::decode(&key)?;
+
+    let key = &Key::<Aes256Gcm>::from_slice(&decoded_key);
+    let cipher = Aes256Gcm::new(key);
     let nonce: &Array<u8, sizes::U12> = &Nonce::try_from(encrypted_bytes)?;
 
     let cipher_text = cipher.encrypt(nonce, payload.as_bytes())?;
 
-    let mut buffer = Vec::with_capacity(1 + 12 + cipher_text.len());
+    let mut buffer = Vec::new();
     buffer.push(0x01);
     buffer.extend_from_slice(encrypted_bytes);
     buffer.extend_from_slice(&cipher_text);
@@ -865,12 +1042,10 @@ pub fn get_episode_url(
 ) -> Result<Vec<(String, Vec<(i32, String)>)>, Box<dyn std::error::Error>> {
     let episode_embed_gql = "query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls }}";
     let key_struct = get_allanime_key()?;
-
-    let key = merge_to_key(&key_struct.part_a_hex, &key_struct.part_b_hex)?;
-
     let query_hash = "f4662f4b7510b26795dd53ef824a0bf1740fbbc5d1273fab18222ac831bca8d0";
+    let key = process_key(&key_struct)?;
+    let aa_req = get_aa_req(&key, query_hash, &key_struct)?;
 
-    let aa_req = get_aa_req(&key, key_struct.epoch, query_hash)?;
     dbg!(&aa_req);
     let query_vars = json!({
         "showId": show_id,
@@ -884,44 +1059,47 @@ pub fn get_episode_url(
             "version": 1,
             "sha256Hash": query_hash
         },
+        "k": &key_struct.lane,
         "aaReq": aa_req
     })
     .to_string();
     //let query_ext=format!("{{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"{query_hash}\"}}, \"aaReq\":\"{aa_req}\" }}");
 
-    let payload = format!(
-        "variables={}&extensions={}",
-        encode(&query_vars),
-        encode(&query_ext)
-    );
-    dbg!(&payload);
 
-    let ref_url = "https://mkissa.to";
-    let api_base = "allanime.day";
-    let api_url = format!("https://api.mkissa.net");
+    
 
     let handler = PostHandler {
-        upload_data: payload.clone(),
+        upload_data: String::new(),
         response_data: Vec::new(),
     };
 
     let mut handle = Easy2::new(handler);
 
-    handle.referer(ref_url)?;
+    handle.referer(DEFAULT_REF_URL)?;
+
+    handle.useragent(DEFAULT_AGENT)?;
 
     let mut headers = List::new();
-    headers.append("Content-Type: application/json")?;
+    headers.append(&format!("Origin: {DEFAULT_REF_URL}"))?;
+    //headers.append("Content-Type: application/json")?;
+    headers.append(&format!("x-build-id: {}", &key_struct.build_id))?;
     handle.http_headers(headers)?;
 
     handle.get(true)?;
     //handle.post_field_size(payload.as_bytes().len() as u64)?;
+    let encoded_vars = handle.url_encode(&query_vars.as_bytes());
+    let encoded_ext = handle.url_encode(&query_ext.as_bytes());
+    
+    let payload = format!("variables={encoded_vars}&extensions={encoded_ext}");
+    dbg!(&payload);
 
-    handle.url(&format!("{api_url}/api?{payload}"))?;
 
-    handle.useragent(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
-    )?;
 
+    handle.url(&format!("{DEFAULT_AA_API}/api?{payload}"))?;
+
+    
+
+    #[cfg(debug_assertions)]
     handle.verbose(false)?;
 
     handle.perform()?;
@@ -936,7 +1114,7 @@ pub fn get_episode_url(
     //     let response = post_curl(payload)?;
     //     let
     // } else {
-    let response = process_response(&root.data, &key)?;
+    let response = process_response(&root.data,&key)?;
     if let Some(episode) = response.episode {
         if let Some(source_url) = episode.source_urls {
             let mut urls: Vec<(String, Vec<(i32, String)>)> = Vec::new();
@@ -1088,10 +1266,10 @@ fn clean_string(input: &str) -> String {
 }
 
 pub fn compare_names(a: &Edge, b: &str) -> bool {
-    let clean_a = clean_string(&a.name);
-    let clean_b = clean_string(b);
-    dbg!(&clean_b);
-    if clean_a.to_lowercase() == clean_b.to_lowercase() {
+    // let clean_a = clean_string(&a.name);
+    // let clean_b = clean_string(b);
+    // dbg!(&clean_b);
+    if &a.name.to_lowercase() == &b.to_lowercase() {
         true
     } else {
         false

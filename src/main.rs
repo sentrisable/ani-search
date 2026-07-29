@@ -14,6 +14,7 @@ use tokio::runtime::Runtime;
 
 
 use ani_search::{
+    anidb::*,
     AnilistVariables, AppSettings, AvailableEpisodes, Config, Edge, Translation, WatchStatus, anilist, anilist_search_shows, anilist_user_shows::{self, List}, animeschedule, capitalize_word, check_credentials, compare_names, episode_source, episodes, generate_link, get_config, get_episode_list, get_episode_url, get_next_episode_release, get_shows, search_anilist, update_settings, write_to_log,
 
 };
@@ -918,10 +919,16 @@ impl eframe::App for Main{
             },
             #[cfg(debug_assertions)]
             Pages::Debug=>{
-            if ui.button("get AllAnime Key").clicked(){
-                get_allanime_key();
+            if ui.button("Test AniDB search").clicked(){
+                if let Ok(client)=AniDbClient::new(){
+                    tokio::spawn(async move{
+                        let show = client.search("yani neko").await.expect("Unable to process query");
+                        dbg!(&show);
+                    });
+                }
             }
-}
+
+        }
 
             
             
