@@ -1,6 +1,8 @@
+use core::fmt;
 use std::{
     collections::BTreeSet,
     error::Error,
+    fmt::write,
     fs,
     io::{BufWriter, Read, Write, stdout},
     path::*,
@@ -9,7 +11,6 @@ use std::{
     sync::mpsc::{Receiver, Sender},
     time::Duration,
 };
-
 
 use base64::Engine;
 
@@ -24,22 +25,39 @@ use tokio::io::repeat;
 use urlencoding::encode;
 
 mod apis;
-mod structs;
 mod providers;
+mod structs;
 
 pub use apis::*;
-pub use structs::*;
 pub use providers::*;
+pub use structs::*;
 
+const DEFAULT_AA_API: &str = "https://api.mkissa.net";
+const DEFAULT_REF_URL: &str = "https://mkissa.to";
+const DEFAULT_AGENT: &str =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0";
 
-const DEFAULT_AA_API:&str = "https://api.mkissa.net";
-const DEFAULT_REF_URL:&str = "https://mkissa.to";
-const DEFAULT_AGENT:&str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0";
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+pub enum VideoPlayer {
+    #[default]
+    MPV,
+    VLC,
+}
 
+impl fmt::Display for VideoPlayer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            VideoPlayer::MPV => write!(f, "MPV"),
+            VideoPlayer::VLC => write!(f, "VLC"),
+        }
+    }
+}
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct AppSettings {
     pub allow_adult: bool,
+    pub video_player: VideoPlayer,
+    pub download_dir: String,
     pub initialized: bool,
 }
 
@@ -89,7 +107,6 @@ pub struct Config {
 pub enum Translation {
     Sub,
     Dub,
-    Raw,
 }
 
 pub struct PostHandler {
@@ -118,56 +135,56 @@ pub enum MessageType {
     Informational,
 }
 
-fn generate_epoch()-> i64{
-    let now_ms =chrono::Utc::now().timestamp() * 1000;
+fn generate_epoch() -> i64 {
+    let now_ms = chrono::Utc::now().timestamp() * 1000;
     let epoch = now_ms / 259200000;
-    if (now_ms - epoch * 259200000) < 86400000  &&  epoch > 0 {
-        return epoch-1;
+    if (now_ms - epoch * 259200000) < 86400000 && epoch > 0 {
+        return epoch - 1;
     }
-        epoch
+    epoch
 }
 
-fn generate_mask(build_id: &str) -> String{
+fn generate_mask(build_id: &str) -> String {
     let b64_lines = [
         "12eJyE2wzfY=",
-"nWIlTqF9f5E=",
-"7f6CmXtAgpY=",
-"oR/792BJ+Sc=",
+        "nWIlTqF9f5E=",
+        "7f6CmXtAgpY=",
+        "oR/792BJ+Sc=",
     ];
 
     let mut hex_key = String::new();
     let build_id_bytes = build_id.as_bytes();
     let build_id_len = build_id_bytes.len();
 
-    if build_id_len == 0{
+    if build_id_len == 0 {
         return hex_key;
     }
-    for (block,b64_str) in b64_lines.iter().enumerate(){
-     
-        if let Ok(decoded_bytes) = base64::prelude::BASE64_STANDARD.decode(b64_str){
-            
-            for (byte, &embedded) in decoded_bytes.iter().enumerate(){
+    for (block, b64_str) in b64_lines.iter().enumerate() {
+        if let Ok(decoded_bytes) = base64::prelude::BASE64_STANDARD.decode(b64_str) {
+            for (byte, &embedded) in decoded_bytes.iter().enumerate() {
                 let index = block * 8 + byte;
                 let c_byte = build_id_bytes[index % build_id_len];
 
-                let build_mask_byte = c_byte ^ (((index * 17) +31)&255) as u8;
+                let build_mask_byte = c_byte ^ (((index * 17) + 31) & 255) as u8;
                 let tweak = (((block * 41) + (byte * 7)) & 255) as u8;
 
                 let value = embedded ^ build_mask_byte ^ tweak;
 
                 hex_key.push_str(&format!("{:02x}", value));
-            
             }
-        }    
+        }
     }
     hex_key
-
 }
 
-
-fn generate_boot(build_id: &str, mask: &str, epoch: i32, lane: Option<&str>) -> Result<String, Box<dyn std::error::Error>>{
+fn generate_boot(
+    build_id: &str,
+    mask: &str,
+    epoch: i32,
+    lane: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
-    use hmac::{Hmac, Mac, KeyInit};
     type HmacSha256 = Hmac<Sha256>;
 
     let mask_bytes = hex::decode(mask)?;
@@ -182,23 +199,18 @@ fn generate_boot(build_id: &str, mask: &str, epoch: i32, lane: Option<&str>) -> 
 
     let mut payload = format!("{build_id}:mkissa:mkissa.to:{epoch}");
 
-    if let Some(l) =lane{
-        if !l.is_empty(){
+    if let Some(l) = lane {
+        if !l.is_empty() {
             payload.push_str(&format!(":{l}"));
-
         }
     }
-    
+
     let mut mac2 = HmacSha256::new_from_slice(&hmac_key_bytes)?;
     mac2.update(payload.as_bytes());
     let final_bytes = mac2.finalize().into_bytes();
 
     let hex_key = hex::encode(final_bytes);
     Ok(hex_key)
-
-
-
-
 }
 
 fn merge_to_key(part_a_hex: &str, part_b_hex: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -218,11 +230,9 @@ fn parse_chunks(
     imm_url: &str,
     unique_chunks: BTreeSet<String>,
 ) -> Result<(String, String), Box<dyn std::error::Error>> {
-    let mut build_id_mask:Vec<String> = vec![];
-    let mut lane_mask:Vec<String> = vec![];
+    let mut build_id_mask: Vec<String> = vec![];
+    let mut lane_mask: Vec<String> = vec![];
 
-
-    
     let build_id_re = regex::Regex::new(r#".*!=="string"\?"([0-9]+)".*"#)?;
     let lane_re = regex::Regex::new(r#".*const ..="(k[0-9]+).*"#)?;
     for c in unique_chunks {
@@ -252,23 +262,19 @@ fn parse_chunks(
 
         handle.perform()?;
 
-        
-
-
         let contents = handle.get_ref();
         let response = &std::str::from_utf8(&contents.response_data)?;
         //dbg!(response);
-        if let Some(caps) = build_id_re.captures(response){
-            
+        if let Some(caps) = build_id_re.captures(response) {
             dbg!(&caps[1]);
             build_id_mask.push(caps[1].to_string());
         }
-        if let Some(caps) = lane_re.captures(response){
+        if let Some(caps) = lane_re.captures(response) {
             dbg!(&caps[1]);
             lane_mask.push(caps[1].to_string());
         }
 
-        if lane_mask.len() ==1 && build_id_mask.len() == 1{
+        if lane_mask.len() == 1 && build_id_mask.len() == 1 {
             return Ok((lane_mask[0].clone(), build_id_mask[0].clone()));
         }
     }
@@ -314,20 +320,24 @@ fn curl_cdn_immutable(entry: &str) -> Result<(String, String), Box<dyn std::erro
         return Err("Unable to parse chunks".into());
     }
 
-
     Ok(chunk)
 }
 
-fn get_boot_resp(build_id: &str, boot: &str, lane: &str)->Result<String, Box<dyn std::error::Error>>{
+fn get_boot_resp(
+    build_id: &str,
+    boot: &str,
+    lane: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
     let payload = String::new();
-    let handler = PostHandler{
+    let handler = PostHandler {
         upload_data: payload.clone(),
-        response_data: Vec::new()
+        response_data: Vec::new(),
     };
 
     let mut handle = Easy2::new(handler);
-    handle.useragent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0")?;
-    
+    handle.useragent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+    )?;
 
     let mut headers = List::new();
     headers.append(&format!("x-build-id: {build_id}"))?;
@@ -336,26 +346,25 @@ fn get_boot_resp(build_id: &str, boot: &str, lane: &str)->Result<String, Box<dyn
     handle.http_headers(headers)?;
 
     handle.referer(DEFAULT_REF_URL)?;
-    
-    handle.url(&format!("{DEFAULT_AA_API}/client-crypto/v1/bootstrap?buildId={build_id}&k={lane}"))?;
+
+    handle.url(&format!(
+        "{DEFAULT_AA_API}/client-crypto/v1/bootstrap?buildId={build_id}&k={lane}"
+    ))?;
 
     handle.perform()?;
 
     let contents = handle.get_ref();
     let response = &std::str::from_utf8(&contents.response_data)?;
 
-    let json:Value = serde_json::from_str(response)?;
+    let json: Value = serde_json::from_str(response)?;
 
-    let part_b = match &json["partB"].as_str(){
+    let part_b = match &json["partB"].as_str() {
         Some(str) => str.to_string(),
-        None=> String::new()
+        None => String::new(),
     };
-    
 
     Ok(part_b)
 }
-
-
 
 pub fn get_allanime_key() -> Result<AllAnimeKey, Box<dyn std::error::Error>> {
     let payload = String::new();
@@ -383,27 +392,26 @@ pub fn get_allanime_key() -> Result<AllAnimeKey, Box<dyn std::error::Error>> {
     let response = &std::str::from_utf8(&contents.response_data)?;
     //dbg!(response);
 
-   let appjs_re = regex::Regex::new(r#"_app/immutable/(entry/app\.[^"']+\.js)"#)?;
+    let appjs_re = regex::Regex::new(r#"_app/immutable/(entry/app\.[^"']+\.js)"#)?;
 
     let entry = match appjs_re.captures(*response) {
         Some(js_caps) => js_caps[1].to_string(),
-        None => String::new()
-
+        None => String::new(),
     };
     let (lane, build_id) = curl_cdn_immutable(&entry)?;
     let epoch = generate_epoch() as i32;
     let mask = generate_mask(&build_id);
-    let boot = generate_boot(&build_id, &mask, epoch, Some(&lane))?;    
+    let boot = generate_boot(&build_id, &mask, epoch, Some(&lane))?;
     let part_b = get_boot_resp(&build_id, &boot, &lane)?;
     let part_b_decoded = base64::prelude::BASE64_STANDARD.decode(part_b)?;
     let hex_part_b = hex::encode(part_b_decoded);
 
-    let key_struct = AllAnimeKey { 
-        epoch, 
-        mask, 
-        lane, 
-        build_id, 
-        part_b: hex_part_b 
+    let key_struct = AllAnimeKey {
+        epoch,
+        mask,
+        lane,
+        build_id,
+        part_b: hex_part_b,
     };
     Ok(key_struct)
 }
@@ -863,37 +871,34 @@ fn process_response(
     Ok(response_json)
 }
 
-fn process_key(key_struct: &AllAnimeKey)->Result<String, Box<dyn std::error::Error>>{
+fn process_key(key_struct: &AllAnimeKey) -> Result<String, Box<dyn std::error::Error>> {
     dbg!(&key_struct.mask);
     dbg!(&key_struct.part_b);
-    
+
     let mut key = String::new();
     let hex_b = &key_struct.part_b;
 
-    for i in (0..64).step_by(2){
-        if i+2 <= key_struct.mask.len() && i+2 <= key_struct.part_b.len(){
-            let m_slice = &key_struct.mask[i..i+2];
-            let p_slice = &hex_b[i..i+2];
+    for i in (0..64).step_by(2) {
+        if i + 2 <= key_struct.mask.len() && i + 2 <= key_struct.part_b.len() {
+            let m_slice = &key_struct.mask[i..i + 2];
+            let p_slice = &hex_b[i..i + 2];
 
             let m_byte = u8::from_str_radix(m_slice, 16)?;
             let p_byte = u8::from_str_radix(p_slice, 16)?;
-            
 
-            let res_dec = m_byte^p_byte;
+            let res_dec = m_byte ^ p_byte;
 
-            key.push_str(&format!("{:02x}",res_dec));
+            key.push_str(&format!("{:02x}", res_dec));
         }
-        
     }
     dbg!(&key);
     Ok(key)
-    
 }
 
 fn get_aa_req(
-    key:&str,
+    key: &str,
     query_hash: &str,
-    key_struct: &AllAnimeKey
+    key_struct: &AllAnimeKey,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use aes_gcm::{
         Aes256Gcm, Key, Nonce,
@@ -902,13 +907,11 @@ fn get_aa_req(
 
     use chrono::Utc;
     use hybrid_array::{Array, sizes};
-    
-    
-    
+
     let ts = (Utc::now().timestamp() / 300) * 300 * 1000;
-    
+
     let payload_iv = format!("{}:{}:{}", key_struct.epoch, query_hash, ts);
-    
+
     let encrypted_iv = encrypt_key(&payload_iv);
     let encrypted_bytes = &encrypted_iv[0..12];
 
@@ -994,7 +997,6 @@ pub fn get_shows(
             "translationType" : match translation_type {
                 Translation::Sub => "sub",
                 Translation::Dub => "dub",
-                Translation::Raw => "raw"
             },
             "countryOrigin" : "ALL"
         },
@@ -1065,9 +1067,6 @@ pub fn get_episode_url(
     .to_string();
     //let query_ext=format!("{{\"persistedQuery\":{{\"version\":1,\"sha256Hash\":\"{query_hash}\"}}, \"aaReq\":\"{aa_req}\" }}");
 
-
-    
-
     let handler = PostHandler {
         upload_data: String::new(),
         response_data: Vec::new(),
@@ -1089,15 +1088,11 @@ pub fn get_episode_url(
     //handle.post_field_size(payload.as_bytes().len() as u64)?;
     let encoded_vars = handle.url_encode(&query_vars.as_bytes());
     let encoded_ext = handle.url_encode(&query_ext.as_bytes());
-    
+
     let payload = format!("variables={encoded_vars}&extensions={encoded_ext}");
     dbg!(&payload);
 
-
-
     handle.url(&format!("{DEFAULT_AA_API}/api?{payload}"))?;
-
-    
 
     #[cfg(debug_assertions)]
     handle.verbose(false)?;
@@ -1114,7 +1109,7 @@ pub fn get_episode_url(
     //     let response = post_curl(payload)?;
     //     let
     // } else {
-    let response = process_response(&root.data,&key)?;
+    let response = process_response(&root.data, &key)?;
     if let Some(episode) = response.episode {
         if let Some(source_url) = episode.source_urls {
             let mut urls: Vec<(String, Vec<(i32, String)>)> = Vec::new();
