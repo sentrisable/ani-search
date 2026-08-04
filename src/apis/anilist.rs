@@ -138,4 +138,3 @@ pub fn update_progress(
     dbg!(&response);
     Ok(())
 }
-

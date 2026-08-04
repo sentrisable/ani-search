@@ -1,9 +1,16 @@
 #![windows_subsystem = "windows"]
 
-use std::{collections::BTreeMap, process, sync::{Arc, Mutex, mpsc::{Receiver, Sender}}, task, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    process,
+    sync::{
+        Arc, Mutex,
+        mpsc::{Receiver, Sender},
+    },
+    task,
+    time::Duration,
+};
 
-#[cfg(debug_assertions)]
-use ani_search::get_allanime_key;
 use eframe::{egui, wgpu::rwh::RawDisplayHandle::UiKit};
 
 use egui::{ComboBox, TextBuffer};
@@ -13,43 +20,48 @@ use egui_extras::{Column, TableBuilder};
 use rfd::FileDialog;
 use tokio::runtime::Runtime;
 
-
 use ani_search::{
-    AnilistVariables, AppSettings, AvailableEpisodes, Config, Edge, Translation, VideoPlayer, WatchStatus, anidb::*, anilist, anilist_search_shows, anilist_user_shows::{self, List}, animeschedule, capitalize_word, check_credentials, compare_names, episode_source, episodes, generate_link, get_config, get_episode_list, get_episode_url, get_next_episode_release, get_shows, search_anilist, update_settings, write_to_log
-
+    Config, Edge, Translation, VideoPlayer, WatchStatus,
+    anidb::*,
+    anilist, anilist_search_shows,
+    anilist_user_shows::{self, List},
+    animeschedule, capitalize_word, check_credentials, episodes, get_config, search_anilist,
+    update_settings, write_to_log,
 };
 
 fn main() {
     let rt = Runtime::new().expect("Unable to create Runtime");
     let _enter = rt.enter();
 
-    
-    
     std::thread::spawn(move || {
         rt.block_on(async {
-            loop{
+            loop {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
             }
         })
     });
 
     let native_options = eframe::NativeOptions::default();
-    eframe::run_native("AniSearch", native_options, Box::new(|cc| Ok(Box::new(Main::new(cc)))));
+    eframe::run_native(
+        "AniSearch",
+        native_options,
+        Box::new(|cc| Ok(Box::new(Main::new(cc)))),
+    );
 }
 
 #[derive(Debug, PartialEq)]
-enum SearchProvider{
+enum SearchProvider {
     AllAnime,
-    Anilist
+    Anilist,
 }
 
-impl Default for SearchProvider{
+impl Default for SearchProvider {
     fn default() -> Self {
         Self::Anilist
     }
 }
 #[derive(Debug, Copy, Clone, PartialEq)]
-enum Pages{
+enum Pages {
     Init,
     Main,
     Show,
@@ -57,33 +69,31 @@ enum Pages{
     Settings,
     Anilist,
     #[cfg(debug_assertions)]
-    Debug
+    Debug,
 }
 
-impl Pages{
+impl Pages {
     fn is_main_page(&self) -> bool {
         matches!(self, Pages::Main)
     }
     fn is_show_page(&self) -> bool {
         matches!(self, Pages::Show)
     }
-
 }
 
 #[derive(Debug, Default)]
-struct Player{
+struct Player {
     spawned: bool,
-    process_id: u32
+    process_id: u32,
 }
 
-struct Main{
+struct Main {
     config: Config,
     pages: Pages,
     provider: SearchProvider,
     panel_extended: bool,
-    previous_page : Vec<Pages>,
-
-
+    previous_page: Vec<Pages>,
+    player_locations: Arc<Mutex<HashMap<String, String>>>,
     anime: String,
     translation: Translation,
     shows: Vec<Edge>,
@@ -92,14 +102,14 @@ struct Main{
     show_info: animeschedule::Anime,
     selected_show: Edge,
     selected_episode: String,
-    selected_episode_urls: Vec<(String,Vec<(i32,String)>)>,
+    selected_episode_urls: Vec<(String, Vec<(i32, String)>)>,
     player: Player,
 
     anilist_info: anilist_user_shows::MediaListCollection,
     anilist_search: anilist_search_shows::Page,
-    anilist_selected_show : anilist_search_shows::Medum,
+    anilist_selected_show: anilist_search_shows::Medum,
     anilist_show_status: WatchStatus,
-    anilist_error : String,
+    anilist_error: String,
     anilist_progress: anilist_user_shows::Entry,
 
     ani_db_show: AniDBId,
@@ -109,11 +119,11 @@ struct Main{
     anidb_tx: Sender<AniDBId>,
     anidb_rx: Receiver<AniDBId>,
 
-    anidb_quality_tx: Sender<BTreeMap<String, BTreeMap<String,Vec<String>>>>,
-    anidb_quality_rx: Receiver<BTreeMap<String, BTreeMap<String,Vec<String>>>>,
+    anidb_quality_tx: Sender<BTreeMap<String, BTreeMap<String, Vec<String>>>>,
+    anidb_quality_rx: Receiver<BTreeMap<String, BTreeMap<String, Vec<String>>>>,
 }
 
-impl Default for Main{
+impl Default for Main {
     fn default() -> Self {
         let (anidb_tx, anidb_rx) = std::sync::mpsc::channel();
         let (anidb_quality_tx, anidb_quality_rx) = std::sync::mpsc::channel();
@@ -123,6 +133,7 @@ impl Default for Main{
             provider: SearchProvider::default(),
             panel_extended: false,
             previous_page: Vec::new(),
+            player_locations: Arc::new(Mutex::new(HashMap::new())),
 
             anime: Default::default(),
             translation: Translation::Sub,
@@ -146,38 +157,65 @@ impl Default for Main{
             ani_db_episodes: Vec::new(),
             ani_db_episode_quality: BTreeMap::new(),
 
-            anidb_tx, 
+            anidb_tx,
             anidb_rx,
             anidb_quality_tx,
-            anidb_quality_rx
+            anidb_quality_rx,
         }
     }
 }
 
-impl Main{
-    fn new(cc: &eframe::CreationContext<'_>)->Self{
+impl Main {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
         Self::default()
     }
 
-    fn back(&mut self) -> Pages{
-        if let Some(prev_page) = self.previous_page.pop(){
+    fn back(&mut self) -> Pages {
+        if let Some(prev_page) = self.previous_page.pop() {
             prev_page
         } else {
             self.pages
         }
     }
 
-    fn anilist_token(&mut self) -> Option<&str>{
-        if !self.config.anilist.token.is_empty(){
+    fn anilist_token(&mut self) -> Option<&str> {
+        if !self.config.anilist.token.is_empty() {
             Some(self.config.anilist.token.as_str())
         } else {
             None
         }
     }
 
-    fn anilist_show_status(&mut self, mut item: List, ui: &mut egui::Ui){
+    fn spawn_player(
+        &self,
+        media_title: &str,
+        link: &str,
+    ) -> Result<process::Child, std::io::Error> {
+        let spawn = match self.config.app_settings.video_player {
+            VideoPlayer::MPV => process::Command::new("mpv")
+                .arg("--tls-verify=no")
+                .arg("--cache=yes")
+                .arg("--save-position-on-quit=yes")
+                .arg(&format!("--force-media-title={}", media_title))
+                .arg(link)
+                .spawn(),
+            VideoPlayer::VLC => process::Command::new("vlc")
+                .arg(&format!("--meta-title={}", media_title))
+                .arg(media_title)
+                .arg(link)
+                .spawn(),
+        };
+        spawn
+    }
+
+    fn anilist_show_status(&mut self, mut item: List, ui: &mut egui::Ui) {
         let status = capitalize_word(&item.name);
-        item.entries.sort_by(|a,b| a.media.title.user_preferred.cmp(&b.media.title.user_preferred));
+        item.entries.sort_by(|a, b| {
+            a.media
+                .title
+                .user_preferred
+                .cmp(&b.media.title.user_preferred)
+        });
         egui::CollapsingHeader::new(&status).id_salt(&status.clone().to_lowercase()).show(ui, |ui| {   
             // ui.horizontal(|ui|{
             //     if ui.button("^").clicked(){
@@ -239,70 +277,65 @@ impl Main{
             });
             
         });
+    }
 }
 
-
-
-}
-
-impl eframe::App for Main{
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame){
-        
-        
-        // if self.config.app_settings.initialized == false{    
+impl eframe::App for Main {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // if self.config.app_settings.initialized == false{
         //     self.config.app_settings.initialized = true;
         //     update_settings(&self.config);
-            
+
         // }
-        
-        
-        egui::MenuBar::new().ui(ui, |ui|{
+
+        egui::MenuBar::new().ui(ui, |ui| {
             ui.separator();
-            ui.menu_button("File", |ui|{
-                if ui.button("Settings").clicked(){
+            ui.menu_button("File", |ui| {
+                if ui.button("Settings").clicked() {
                     self.previous_page.push(self.pages);
                     self.pages = Pages::Settings;
                 }
                 #[cfg(debug_assertions)]
-                if ui.button("DEBUG").clicked(){
+                if ui.button("DEBUG").clicked() {
                     self.pages = Pages::Debug;
                 }
-                if ui.button("Quit").clicked(){
+                if ui.button("Quit").clicked() {
                     ui.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
             ui.separator();
-            ui.menu_button("Anilist", |ui|{
-                if ui.button("Get Auth token").clicked(){
-                    
+            ui.menu_button("Anilist", |ui| {
+                if ui.button("Get Auth token").clicked() {
                     self.previous_page.push(self.pages);
                     self.pages = Pages::APIAuth;
                 }
 
-                ui.add_enabled_ui(!&self.config.anilist.token.is_empty(), |ui|{
-                    if ui.button("My Anilist").clicked(){
+                ui.add_enabled_ui(!&self.config.anilist.token.is_empty(), |ui| {
+                    if ui.button("My Anilist").clicked() {
                         self.previous_page.push(self.pages);
                         self.pages = Pages::Anilist;
-                        if let Ok(info) = anilist::get_anime_from_list(self.config.anilist.user_id, &self.anilist_token()){
+                        if let Ok(info) = anilist::get_anime_from_list(
+                            self.config.anilist.user_id,
+                            &self.anilist_token(),
+                        ) {
                             self.anilist_info = info;
                         }
                     }
                 })
             });
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::RIGHT), |ui|{
-                if self.show_focus == true{
-                    if self.panel_extended == true{
-                        if ui.button("Close Panel").clicked(){
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::RIGHT), |ui| {
+                if self.show_focus == true {
+                    if self.panel_extended == true {
+                        if ui.button("Close Panel").clicked() {
                             self.panel_extended = !self.panel_extended;
                         }
                     } else {
-                        if ui.button("Open Panel").clicked(){
+                        if ui.button("Open Panel").clicked() {
                             self.panel_extended = !self.panel_extended;
                         }
                     }
                 }
-                
             });
         });
 
@@ -398,22 +431,22 @@ impl eframe::App for Main{
                                     
 
 
-                                    if ui.button("Watch Dub").clicked() && let Ok(shows) = get_shows(&user_preferred, &Translation::Dub, &self.config){
-                                            for show in shows{
-                                                if show.name.to_lowercase() == user_preferred.to_ascii_lowercase(){
-                                                    self.selected_show = show.clone();
-                                                        if let Ok(eps) = get_episode_list(&show.id){
-                                                        self.episode_list = eps.clone();
-                                                    }
-                                                    self.previous_page.push(self.pages);
-                                                    self.pages= Pages::Show;
-                                                    self.show_focus = false;
+                                    // if ui.button("Watch Dub").clicked() && let Ok(shows) = get_shows(&user_preferred, &Translation::Dub, &self.config){
+                                    //         for show in shows{
+                                    //             if show.name.to_lowercase() == user_preferred.to_ascii_lowercase(){
+                                    //                 self.selected_show = show.clone();
+                                    //                     if let Ok(eps) = get_episode_list(&show.id){
+                                    //                     self.episode_list = eps.clone();
+                                    //                 }
+                                    //                 self.previous_page.push(self.pages);
+                                    //                 self.pages= Pages::Show;
+                                    //                 self.show_focus = false;
                                                     
-                                                }
-                                            }
+                                    //             }
+                                    //         }
                                             
-                                        }
-                                        }
+                                    //     }
+                                    }
                                 }                                           
                                 
                                 
@@ -469,7 +502,7 @@ impl eframe::App for Main{
                                                                                         Some(title) => title,
                                                                                         None => &"".to_string()
                                                                                     };
-                                                                                    let media_title = format!("--force-media-title=\"{} Episode {}\"", show_title, &self.selected_episode);    
+                                                                                    let media_title = format!("\"{} Episode {}\"", show_title, &self.selected_episode);    
                                                                                     if self.player.spawned && self.player.process_id > 0{
                                                                                         #[cfg(unix)]
                                                                                         match process::Command::new("kill").args(["-9", &self.player.process_id.to_string()]).output(){
@@ -478,14 +511,8 @@ impl eframe::App for Main{
                                                                                         };   
 
                                                                                     }
-                                                                    
-                                                                                    match process::Command::new("mpv")
-                                                                                        .arg("--tls-verify=no")
-                                                                                        .arg("--cache=yes")
-                                                                                        .arg("--save-position-on-quit=yes")                    
-                                                                                        .arg(media_title)
-                                                                                        .arg(link)
-                                                                                        .spawn(){
+                                                                                    
+                                                                                    match self.spawn_player(&media_title, &link){
                                                                                         Ok(spawned) => {
                                                                         
                                                                                             self.player.spawned= true;
@@ -559,7 +586,6 @@ impl eframe::App for Main{
         }
     });
 
-
         egui::CentralPanel::default().show(ui, |ui| match self.pages{
             
             Pages::Init=>{
@@ -570,6 +596,20 @@ impl eframe::App for Main{
                         update_settings(&self.config);
                 
                 }
+                let player_locations = Arc::new(Mutex::new(HashMap::new()));
+                for player in ["mpv", "vlc"]{
+                    let map_clone = Arc::clone(&player_locations);
+                    tokio::spawn(async move {
+                        use ani_search::find_player;
+                        let location = find_player(player).await.expect("failed");
+                        let mut map = map_clone.lock().expect("Unable to lock Mutex");
+                        map.insert(player.to_string(), location);
+                        
+                    });
+                }
+                
+                self.player_locations = player_locations.clone();
+                dbg!(&self.player_locations);
                 self.pages = Pages::Main;
 
             }
@@ -653,11 +693,7 @@ impl eframe::App for Main{
                     );
                     
                 });
-                if self.show_info == animeschedule::Anime::default(){
-                    if let Ok(info) = get_next_episode_release(&self.selected_show){
-                        self.show_info = info.clone();
-                    }
-                }        
+                  
                 
                 if let Some(description) = &self.show_info.description{
                     ui.label(description);
@@ -733,11 +769,20 @@ impl eframe::App for Main{
                     ui.label("Allow Adult");
                     ui.add(egui::Checkbox::without_text(&mut self.config.app_settings.allow_adult));
                     ui.end_row();
-                   
+                    
+                    
                     ui.label("Selected Media Player");
                     egui::ComboBox::new("media_player", "").selected_text(format!("{}",&self.config.app_settings.video_player)).show_ui(ui, |ui|{
-                            ui.selectable_value(&mut self.config.app_settings.video_player, VideoPlayer::MPV, "MPV");
-                            ui.selectable_value(&mut self.config.app_settings.video_player, VideoPlayer::VLC, "VLC");
+                            if let Ok(player_locations) = self.player_locations.lock(){
+                                if player_locations.get("mpv").is_some(){
+                                    ui.selectable_value(&mut self.config.app_settings.video_player, VideoPlayer::MPV, "MPV");
+                                }
+                                if player_locations.get("vlc").is_some(){
+                                    ui.selectable_value(&mut self.config.app_settings.video_player, VideoPlayer::VLC, "VLC");
+                        
+                                }
+                                
+                            }        
                         }) ;
                     ui.end_row();
 
@@ -808,11 +853,10 @@ impl eframe::App for Main{
             },
             #[cfg(debug_assertions)]
             Pages::Debug=>{
-        }
-
-            
-            
+                if ui.button("test video player finder").clicked(){
+                    dbg!(&self.player_locations);                                            
+                }
+            }           
         });
     }
 }
-
