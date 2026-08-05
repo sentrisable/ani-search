@@ -1,16 +1,13 @@
 #![windows_subsystem = "windows"]
 
 use std::{
-    collections::{BTreeMap, HashMap},
-    process,
-    sync::{
+    collections::{BTreeMap, HashMap}, process::{self, Stdio}, sync::{
         Arc, Mutex,
         mpsc::{Receiver, Sender},
-    },
-    task,
-    time::Duration,
+    }, task, time::Duration,
 };
 
+use discord_rich_presence::DiscordIpcClient;
 use eframe::{egui, wgpu::rwh::RawDisplayHandle::UiKit};
 
 use egui::{ComboBox, TextBuffer};
@@ -19,17 +16,13 @@ use egui_extras::{Column, TableBuilder};
 
 use rfd::FileDialog;
 use tokio::runtime::Runtime;
+use anyhow::Result;
 
 use ani_search::{
-    Config, Edge, Translation, VideoPlayer, WatchStatus,
-    anidb::*,
-    anilist, anilist_search_shows,
-    anilist_user_shows::{self, List},
-    animeschedule, capitalize_word, check_credentials, episodes, get_config, search_anilist,
-    update_settings, write_to_log,
+    Config, Edge, Translation, VideoPlayer, WatchStatus, anidb::*, anilist, anilist_search_shows, anilist_user_shows::{self, List}, animeschedule, aria2_download, capitalize_word, check_credentials, create_rpc_client, episodes, get_config, search_anilist, update_discord_status, update_settings, write_to_log,
 };
 
-fn main() {
+fn main() -> Result<()> {
     let rt = Runtime::new().expect("Unable to create Runtime");
     let _enter = rt.enter();
 
@@ -46,12 +39,13 @@ fn main() {
         "AniSearch",
         native_options,
         Box::new(|cc| Ok(Box::new(Main::new(cc)))),
-    );
+    )?;
+    Ok(())
 }
 
 #[derive(Debug, PartialEq)]
 enum SearchProvider {
-    AllAnime,
+    
     Anilist,
 }
 
@@ -94,6 +88,9 @@ struct Main {
     panel_extended: bool,
     previous_page: Vec<Pages>,
     player_locations: Arc<Mutex<HashMap<String, String>>>,
+    discord_rpc_client: Option<DiscordIpcClient>,
+    color_theme: egui::Theme,
+
     anime: String,
     translation: Translation,
     shows: Vec<Edge>,
@@ -134,6 +131,9 @@ impl Default for Main {
             panel_extended: false,
             previous_page: Vec::new(),
             player_locations: Arc::new(Mutex::new(HashMap::new())),
+            discord_rpc_client: None,
+            color_theme: egui::Theme::Dark,
+
 
             anime: Default::default(),
             translation: Translation::Sub,
@@ -167,7 +167,14 @@ impl Default for Main {
 
 impl Main {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        Self::default()
+        egui_extras::install_image_loaders(&cc.egui_ctx);
+        
+        let mut slf = Self::default();
+        if let Some(storage) = cc.storage
+        && let Some(theme) = eframe::get_value(storage, eframe::APP_KEY){
+            slf.color_theme = theme;
+        }
+        slf
     }
 
     fn back(&mut self) -> Pages {
@@ -198,11 +205,13 @@ impl Main {
                 .arg("--save-position-on-quit=yes")
                 .arg(&format!("--force-media-title={}", media_title))
                 .arg(link)
+                .stderr(Stdio::null())
                 .spawn(),
             VideoPlayer::VLC => process::Command::new("vlc")
                 .arg(&format!("--meta-title={}", media_title))
                 .arg(media_title)
                 .arg(link)
+                .stderr(Stdio::null())
                 .spawn(),
         };
         spawn
@@ -281,6 +290,11 @@ impl Main {
 }
 
 impl eframe::App for Main {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, eframe::APP_KEY, &self.color_theme);
+        
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // if self.config.app_settings.initialized == false{
         //     self.config.app_settings.initialized = true;
@@ -348,6 +362,7 @@ impl eframe::App for Main {
             Pages::Main | Pages::Anilist if self.show_focus =>{ 
                         
                         egui_extras::install_image_loaders(ui.ctx());
+                        
                         egui::ScrollArea::vertical().id_salt("selected_show_frame").show(ui, |ui|{
                             if self.pages == Pages::Anilist{
                                 let progress= self.anilist_progress.progress as f32;
@@ -403,6 +418,7 @@ impl eframe::App for Main {
                                     .max_width(ui.ctx().viewport_rect().width()/4.0)
                                     .maintain_aspect_ratio(true)); 
                             }
+                            let mut sub_button_clicked = false ;
                             ui.horizontal(|ui|{
                                 if let Some(title) = &self.anilist_selected_show.title{
                                     let english = match &title.english{
@@ -414,6 +430,7 @@ impl eframe::App for Main {
                                         None => "".to_string()
                                     };
                                     if let Some(user_preferred) = &title.user_preferred && ui.button("Watch Sub").clicked(){
+                                        sub_button_clicked = true;
                                         if let Ok(client)=AniDbClient::new(){
                                             let tx = self.anidb_tx.clone();    
                                             let ctx = ui.ctx().clone();
@@ -496,8 +513,9 @@ impl eframe::App for Main {
                                                                         ui.horizontal(|ui|{
                                                                             let selected = vec![false; language.1.len()];
                                                                             for (i, quality) in language.1.iter().enumerate(){
+                                                                                let link = quality.1[0].clone();
                                                                                 if ui.selectable_label(selected[i], quality.0).clicked(){
-                                                                                    let link = quality.1[0].clone();
+                                                                                    
                                                                                     let show_title = match &self.ani_db_show.title{
                                                                                         Some(title) => title,
                                                                                         None => &"".to_string()
@@ -514,7 +532,12 @@ impl eframe::App for Main {
                                                                                     
                                                                                     match self.spawn_player(&media_title, &link){
                                                                                         Ok(spawned) => {
-                                                                        
+                                                                                            match &mut self.discord_rpc_client{
+                                                                                                Some(client) => {
+                                                                                                    update_discord_status(client, show_title);
+                                                                                                }
+                                                                                                None => ()
+                                                                                            }
                                                                                             self.player.spawned= true;
                                                                                             self.player.process_id = spawned.id();
                                                                                             if self.anilist_token().is_some() && let Some(show_id) = self.anilist_selected_show.id{
@@ -534,6 +557,14 @@ impl eframe::App for Main {
 
                                                                                     }
 
+                                                                                }
+                                                                                if ui.button("⭳").clicked(){
+                                                                                    let download_location = self.config.app_settings.download_dir.clone();
+                                                                                    let url = &link.clone();
+                                                                                    tokio::spawn(async move{
+                                                                                        aria2_download(&download_location, &url).await.expect("Unable to download");
+                                                                                    });
+                                                                                    
                                                                                 }
                                                                             }
                                                                         });
@@ -589,7 +620,17 @@ impl eframe::App for Main {
         egui::CentralPanel::default().show(ui, |ui| match self.pages{
             
             Pages::Init=>{
-                egui_extras::install_image_loaders(ui.ctx());
+                
+                dotenvy::dotenv().expect("Unable to load .env file");
+                
+                if let Ok(discord_client_id) = std::env::var("DISCORD_CLIENT_ID"){
+                    if let Ok(discord_client) = create_rpc_client(&discord_client_id){
+                        self.discord_rpc_client = Some(discord_client);
+                        
+                    }
+                    
+                }
+
                 if !self.config.app_settings.initialized && let Ok(config) = get_config(){
                         self.config = config;
                         self.config.app_settings.initialized = true;
@@ -607,6 +648,7 @@ impl eframe::App for Main {
                         
                     });
                 }
+                
                 
                 self.player_locations = player_locations.clone();
                 dbg!(&self.player_locations);
@@ -640,6 +682,9 @@ impl eframe::App for Main {
                                             if let Some(user_preferred) = &title.user_preferred{
                                             if ui.selectable_label(selected_state[i], user_preferred).clicked(){
                                                 self.anilist_selected_show = media.clone();
+                                                if self.ani_db_show.episodes.is_some(){
+                                                   self.ani_db_show.episodes = None;
+                                                }
                                                 self.show_focus = true;
                                                 dbg!(media.clone());
                                                 self.panel_extended = true;
@@ -765,7 +810,14 @@ impl eframe::App for Main {
                 .num_columns(2)
                 .spacing([40.0, 10.0])
                 .show(ui, |ui| {
-                    
+                    ui.label("Theme");
+                    let prev_theme= ui.theme();
+                    egui::widgets::global_theme_preference_buttons(ui);
+                    if prev_theme != ui.theme(){
+                        self.color_theme = ui.theme();
+                    }
+                    ui.end_row();
+
                     ui.label("Allow Adult");
                     ui.add(egui::Checkbox::without_text(&mut self.config.app_settings.allow_adult));
                     ui.end_row();
@@ -853,8 +905,8 @@ impl eframe::App for Main {
             },
             #[cfg(debug_assertions)]
             Pages::Debug=>{
-                if ui.button("test video player finder").clicked(){
-                    dbg!(&self.player_locations);                                            
+                if ui.button("test theme").clicked(){
+                    dbg!(&self.color_theme);         
                 }
             }           
         });

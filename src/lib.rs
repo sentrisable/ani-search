@@ -12,18 +12,12 @@ use std::{
     time::Duration,
 };
 
-use base64::Engine;
 
 use chrono::format::parse;
 use curl::easy::{Easy2, Handler, List, ReadError, WriteError};
-use egui::Key::V;
-use hybrid_array::{ArraySize, typenum};
-use openssl_sys::EVP_MAC_CTX_new;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{io::repeat, process};
-use urlencoding::encode;
-
 mod apis;
 mod providers;
 mod structs;
@@ -55,6 +49,7 @@ impl fmt::Display for VideoPlayer {
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct AppSettings {
+    pub theme: String,
     pub allow_adult: bool,
     pub video_player: VideoPlayer,
     pub download_dir: String,

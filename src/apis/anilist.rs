@@ -42,8 +42,8 @@ fn post_anilist(
     handle.post(true)?;
     handle.post_field_size(payload.as_bytes().len() as u64)?;
 
-    #[cfg(debug_assertions)]
-    handle.verbose(true)?;
+    //#[cfg(debug_assertions)]
+    //handle.verbose(true)?;
 
     handle.url("https://graphql.anilist.co")?;
     handle.perform()?;

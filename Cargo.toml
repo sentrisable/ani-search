@@ -7,30 +7,43 @@ description = "A desktop client that allows the user to search for and watch ani
 repository = "https://github.com/sentrisable/ani-search/"
 
 [dependencies]
-aes = "0.9.1"
-base64 = "0.22.1"
-ctr = "0.10.1"
 curl = "0.4.50"
-eframe = "0.35.0"
+eframe = {version = "0.35.0", features =["persistence"]}
 egui = "0.35.0"
 egui_extras = {version = "0.35.0", features=["all_loaders"]}
-hex = "0.4.3"
 json = "0.12.4"
-openssl-sys ="0.9"
-openssl = {version ="0.10", features =["vendored"]}
 serde = {version = "1.0.228", features =["derive"]}
 serde_json = "1.0.150"
-sha2 = "0.11.0"
 tokio = {version = "1", features=["full"]}
-urlencoding = "2.1.3"
 chrono = "0.4.45"
-aes-gcm = "0.11.0"
-hybrid-array = "0.4.13"
 regex = "1.13.1"
 toml = "1.1.3"
 image = {version ="0.25.6", features = ["jpeg", "png"]}
-profiling-procmacros = "1.0.18"
-hmac = "0.13.0"
+
 reqwest = {version="0.13.4", features=["json","cookies"]}
 rfd = "0.17.2"
+discord-rich-presence = "1.1.0"
+anyhow = "1.0.104"
+dotenvy = "0.15.7"
+aria2-core = "0.2.1"
+rsa = "0.10.0-rc.12"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+# DEVELOPING LINTS
+nursery = { level = "deny", priority = -1 }
+# DENY PANICS
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+unchecked_time_subtraction = "deny"
+todo = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+as_conversions = "deny"
 

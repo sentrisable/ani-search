@@ -1,3 +1,9 @@
 /target
-/allanime_key.sh
+.env
+resp.json
+response.json
+scraper.sh
+seder.sh
+Settings.toml
+text.txt
 
