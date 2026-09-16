@@ -25,8 +25,11 @@ rfd = "0.17.2"
 discord-rich-presence = "1.1.0"
 anyhow = "1.0.104"
 dotenvy = "0.15.7"
-aria2-core = "0.2.1"
-rsa = "0.10.0-rc.12"
+aria2-core = "0.2.8"
+russh = "0.62.5"
+html-escape = "0.2.15"
+base64 = "0.23.1"
+
 
 [lints.clippy]
 pedantic = { level = "deny", priority = -1 }

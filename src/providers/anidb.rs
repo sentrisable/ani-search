@@ -119,7 +119,7 @@ impl AniDbClient {
 
     pub async fn search(&self, query: &str) -> Result<Vec<AniDBId>, Box<dyn Error>> {
         let query = query.trim().replace(" ", "+");
-        let search_url = format!("{}/browse?q={}", self.inner.anidb_api, query);
+        let search_url = format!("{}/keyword?q={}", self.inner.anidb_api, query);
         let response = self
             .inner
             .http
@@ -166,7 +166,7 @@ impl AniDbClient {
         id: &str,
     ) -> Result<Option<Vec<AniDbEpisode>>, Box<dyn Error>> {
         let search_url = format!(
-            "{}/api/frontend/anime/{}/episodes",
+            "{}/api/theme/episode/list/{}",
             self.inner.anidb_api, id
         );
 
@@ -192,6 +192,7 @@ impl AniDbClient {
             Ok(None)
         }
     }
+
 
     pub async fn get_episode_m3u8(
         &self,
@@ -275,4 +276,5 @@ impl AniDbClient {
         }
         Ok(link_map)
     }
+
 }
