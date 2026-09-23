@@ -447,26 +447,44 @@ impl eframe::App for Main {
                             ui.horizontal(|ui|{
                                 if let Some(title) = &self.anilist_selected_show.title{
                                     let english = match &title.english{
-                                        Some(e) => e.to_string(),
+                                        Some(e) => e.to_string().chars().filter(|c| c.is_alphanumeric()).collect(),
                                         None => "".to_string()
                                     };
                                     let romanji = match &title.romaji{
-                                        Some(r) => r.to_string(),
+                                        Some(r) => r.to_string().chars().filter(|c| c.is_alphanumeric()).collect(),
                                         None => "".to_string()
                                     };
-                                    if let Some(user_preferred) = &title.user_preferred && ui.button("Watch Sub").clicked(){
+                                    if let Some(user_preferred) = &title.user_preferred 
+                                            && ui.button("Watch Sub").clicked(){
                                         if let Ok(client)= HiAnimeClient::new(){
                                             let tx = self.hianime_tx.clone();    
                                             let ctx = ui.ctx().clone();
                                             let show_title = user_preferred.clone();
                                                 tokio::spawn(async move{
                                                 let shows = client.search(&show_title).await.expect("Unable to process query");
-                                                if let Some(show ) = shows.iter().find(|x| x.title.clone().unwrap_or_default().to_lowercase() == romanji.clone().to_lowercase() || x.title.clone().unwrap_or_default().to_lowercase() == english.clone().to_lowercase()){
-                                                            dbg!(&show);
-                                                            let _ = tx.send(show.clone());
-                                                }
+                                                for s in &shows{
+                                                    if let Some(id) = &s.hianime_id && id.contains("uncensored"){
+                                                        dbg!("uncensored");
+                                                        
+                                                        if let Some(show ) = shows.iter().find(|x| 
+                                                            x.title.clone().unwrap_or_default().chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase().contains(&format!("{}uncensored",&romanji.clone().to_lowercase())) || 
+                                                            x.title.clone().unwrap_or_default().chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase().contains(&format!("{}uncensored",&english.clone().to_lowercase()))){
+                                                                
+                                                                let _ = tx.send(show.clone());
+
+                                                            }
+                                                            
+                                                        } else {
+                                                
+                                                            if let Some(show ) = shows.iter().find(|x| 
+                                                            x.title.clone().unwrap_or_default().chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase().contains(&romanji.clone().to_lowercase()) || 
+                                                            x.title.clone().unwrap_or_default().chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase().contains(&english.clone().to_lowercase())){
+                                                                let _ = tx.send(show.clone());
+                                                            }
+                                                        }                                                            
                                                 ctx.request_repaint();
-                                            });
+                                            }
+                                        });
                                         }
 
                                     
@@ -493,12 +511,15 @@ impl eframe::App for Main {
                                 
                             });
                                     if let Ok(show) = self.hianime_rx.try_recv(){
+                                        dbg!(&show);
                                         self.ani_db_show = show;
                                     }
                                         let title = match &self.ani_db_show.title{
                                             Some(t) => t,
                                             None => &"No Title Available".to_string()
                                         };
+
+                                        
                                             
                                          
                                             match &mut self.ani_db_show.episodes {
@@ -698,6 +719,7 @@ impl eframe::App for Main {
                                             if ui.selectable_label(selected_state[i], user_preferred).clicked(){
                                                 self.anilist_selected_show = media.clone();
                                                 if self.ani_db_show.episodes.is_some(){
+                                                dbg!("CLEAR EPISODES");
                                                    self.ani_db_show.episodes = None;
                                                    
                                                 }

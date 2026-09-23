@@ -257,7 +257,7 @@ impl HiAnimeClient {
 
             let decoded_bytes = BASE64_STANDARD.decode(hash)?;
             let decoded_hash = String::from_utf8(decoded_bytes)?;
-
+            dbg!(&decoded_hash);
 
             let refr_re= Regex::new(r#"^(https?://[^/]*).*"#)?;
             let refr = match refr_re.captures(&decoded_hash){
