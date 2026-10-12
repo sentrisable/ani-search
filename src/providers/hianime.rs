@@ -3,10 +3,7 @@ use reqwest::{Client, Response, StatusCode, header};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
-    collections::BTreeMap,
-    error::Error,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    collections::BTreeMap, error::Error, io::BufWriter, sync::{Arc, Mutex}, time::{Duration, Instant},
 };
 use base64::prelude::*;
 
@@ -274,6 +271,10 @@ impl HiAnimeClient {
             let blob = self.get_blob(&decoded_hash).await?;
             let blob_json:Value = serde_json::from_str(&blob)?;
             dbg!(&blob_json);
+            if let Ok(file) = std::fs::File::create("blob.json"){
+                serde_json::to_writer(file, &blob_json);
+            
+            };
             let m3u8_master = match blob_json["src"].as_str(){
                 Some(x) => x,
                 None => ""
@@ -287,7 +288,8 @@ impl HiAnimeClient {
                 let y = serde_json::from_value::<Subtitles>(sub.clone())?;
                 sub_list.push(y);
             }
-            
+
+            &dbg!(&refr);
             link_map = self.get_video_link(&m3u8_master, &refr, sub_list).await?;
         }
         
