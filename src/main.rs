@@ -1,10 +1,15 @@
 #![windows_subsystem = "windows"]
 
 use std::{
-    collections::{BTreeMap, HashMap}, fmt::format, process::{self, Stdio}, sync::{
+    collections::{BTreeMap, HashMap},
+    fmt::format,
+    process::{self, Stdio},
+    sync::{
         Arc, Mutex,
         mpsc::{Receiver, Sender},
-    }, task, time::Duration,
+    },
+    task,
+    time::Duration,
 };
 
 use discord_rich_presence::DiscordIpcClient;
@@ -14,31 +19,12 @@ use egui::{ComboBox, TextBuffer};
 
 use egui_extras::{Column, TableBuilder};
 
+use anyhow::Result;
 use rfd::FileDialog;
 use tokio::runtime::Runtime;
-use anyhow::Result;
 
 use ani_search::{
-    Config, 
-    Edge, 
-    Translation, 
-    VideoPlayer, 
-    WatchStatus, 
-    hianime::*, 
-    anilist, 
-    anilist_search_shows, 
-    anilist_user_shows::{self, List}, 
-    animeschedule, 
-    //aria2_download, 
-    capitalize_word, 
-    check_credentials, 
-    create_rpc_client, 
-    episodes, 
-    get_config, 
-    search_anilist, 
-    update_discord_status, 
-    update_settings, 
-    write_to_log,
+    Config, Edge, Translation, VideoPlayer, WatchStatus, anilist, anilist_search_shows, anilist_user_shows::{self, List}, animeschedule, capitalize_word, check_credentials, clean_string, create_rpc_client, episodes, get_config, hianime::*, search_anilist, update_discord_status, update_settings, write_to_log,
 };
 
 fn main() -> Result<()> {
@@ -64,7 +50,6 @@ fn main() -> Result<()> {
 
 #[derive(Debug, PartialEq)]
 enum SearchProvider {
-    
     Anilist,
 }
 
@@ -136,7 +121,7 @@ struct Main {
     hianime_rx: Receiver<HiAnimeId>,
 
     hianime_quality_tx: Sender<Vec<HiAnimeEpisodeLink>>,
-    hianime_quality_rx: Receiver<Vec<HiAnimeEpisodeLink>>
+    hianime_quality_rx: Receiver<Vec<HiAnimeEpisodeLink>>,
 }
 
 impl Default for Main {
@@ -152,7 +137,6 @@ impl Default for Main {
             player_locations: Arc::new(Mutex::new(HashMap::new())),
             discord_rpc_client: None,
             color_theme: egui::Theme::Dark,
-
 
             anime: Default::default(),
             translation: Translation::Sub,
@@ -187,10 +171,11 @@ impl Default for Main {
 impl Main {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        
+
         let mut slf = Self::default();
         if let Some(storage) = cc.storage
-        && let Some(theme) = eframe::get_value(storage, eframe::APP_KEY){
+            && let Some(theme) = eframe::get_value(storage, eframe::APP_KEY)
+        {
             slf.color_theme = theme;
         }
         slf
@@ -217,10 +202,8 @@ impl Main {
         media_title: &str,
         link: &str,
         referrer: &str,
-        subs: Vec<Subtitles>
+        subs: Vec<Subtitles>,
     ) -> Result<process::Child, std::io::Error> {
-    
-
         let spawn = match self.config.app_settings.video_player {
             VideoPlayer::MPV => process::Command::new("mpv")
                 .arg(&format!("--referrer={referrer}"))
@@ -263,7 +246,6 @@ impl Main {
                     if let Some(title) = &show.media.title.english{
                         if ui.selectable_label(selected_state[i], title).clicked(){
                             self.anilist_progress = show.clone();
-                            
                             if let Ok(searched_title) = search_anilist(title, &self.anilist_token()){
                                 if  let Some(current_page) = searched_title.page_info.current_page{
                                     if current_page == 1{
@@ -288,6 +270,12 @@ impl Main {
                                                                     _ => self.anilist_show_status = WatchStatus::None
                                                                 }
                                                             }
+                                                        }
+                                                        dbg!(&self.ani_db_show);
+                                                        if self.ani_db_show.episodes.is_some(){
+                                                            dbg!("CLEAR EPISODES");
+                                                            self.ani_db_show.episodes = None;
+                                                        
                                                         }
                                                         self.anilist_selected_show = media.clone();
                                                         self.show_focus = true;
@@ -318,7 +306,6 @@ impl Main {
 impl eframe::App for Main {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, &self.color_theme);
-        
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -461,26 +448,38 @@ impl eframe::App for Main {
                                             let ctx = ui.ctx().clone();
                                             let show_title = user_preferred.clone();
                                                 tokio::spawn(async move{
+                                                
+                                                let show_title = clean_string(&show_title);
+                                                dbg!(&show_title);
                                                 let shows = client.search(&show_title).await.expect("Unable to process query");
+                                                dbg!(&shows);
+                                                dbg!(&romanji);
                                                 for s in &shows{
                                                     if let Some(id) = &s.hianime_id && id.contains("uncensored"){
                                                         dbg!("uncensored");
                                                         
                                                         if let Some(show ) = shows.iter().find(|x| 
-                                                            x.title.clone().unwrap_or_default().chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase().contains(&format!("{}uncensored",&romanji.clone().to_lowercase())) || 
-                                                            x.title.clone().unwrap_or_default().chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase().contains(&format!("{}uncensored",&english.clone().to_lowercase()))){
+                                                            clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&romanji.to_lowercase()) || 
+                                                            clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&english.to_lowercase()))
+                                                        {
                                                                 
                                                                 let _ = tx.send(show.clone());
 
                                                             }
                                                             
                                                         } else {
-                                                
+                                                            // for show in shows.iter(){
+                                                            //     if let Some(title) = &show.title{
+                                                            //         let x = clean_string(title);
+                                                            //         dbg!(&x);
+                                                            //     }
+                                                            // }
                                                             if let Some(show ) = shows.iter().find(|x| 
-                                                            x.title.clone().unwrap_or_default().chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase().contains(&romanji.clone().to_lowercase()) || 
-                                                            x.title.clone().unwrap_or_default().chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase().contains(&english.clone().to_lowercase())){
+                                                                clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&romanji.to_lowercase()) || 
+                                                                clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&english.to_lowercase()))
+                                                            {
                                                                 let _ = tx.send(show.clone());
-                                                            }
+                                                            };
                                                         }                                                            
                                                 ctx.request_repaint();
                                             }
@@ -511,7 +510,6 @@ impl eframe::App for Main {
                                 
                             });
                                     if let Ok(show) = self.hianime_rx.try_recv(){
-                                        dbg!(&show);
                                         self.ani_db_show = show;
                                     }
                                         let title = match &self.ani_db_show.title{
@@ -718,9 +716,10 @@ impl eframe::App for Main {
                                             if let Some(user_preferred) = &title.user_preferred{
                                             if ui.selectable_label(selected_state[i], user_preferred).clicked(){
                                                 self.anilist_selected_show = media.clone();
+                                                dbg!(&self.ani_db_show);
                                                 if self.ani_db_show.episodes.is_some(){
-                                                dbg!("CLEAR EPISODES");
-                                                   self.ani_db_show.episodes = None;
+                                                    dbg!("CLEAR EPISODES");
+                                                    self.ani_db_show.episodes = None;
                                                    
                                                 }
                                                 self.show_focus = true;
@@ -938,15 +937,14 @@ impl eframe::App for Main {
                         },
                          _=> ()
                     }    
-                }
-                
+                }  
             },
             #[cfg(debug_assertions)]
             Pages::Debug=>{
                 if ui.button("test download").clicked(){
-                    dbg!(&self.color_theme);         
+                    dbg!(&self.color_theme);
                 }
-            }           
+            }
         });
     }
 }

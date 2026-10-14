@@ -12,7 +12,6 @@ use std::{
     time::Duration,
 };
 
-
 use chrono::format::parse;
 use curl::easy::{Easy2, Handler, List, ReadError, WriteError};
 use serde::{Deserialize, Serialize};
@@ -254,10 +253,26 @@ pub fn capitalize_word(input: &str) -> String {
     }
 }
 
-fn clean_string(input: &str) -> String {
-    let result: String = input
+fn remove_html_code(input: &str)->String{
+    let html_re = regex::Regex::new(r#"&#[a-zA-Z0-9]+;"#).unwrap();
+    let mut result = String::from(input);
+    for cap in html_re.captures_iter(input){
+        result = result.replace(&cap[0], "");
+        
+    //     result
+    // } else {
+    //     input.to_string()
+    }
+    result
+    
+}
+
+pub fn clean_string(input: &str) -> String {
+    let removed_html = remove_html_code(input);
+    
+    let result: String = removed_html
         .chars()
-        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .filter(|c| c.is_alphanumeric())
         .collect();
 
     result
@@ -272,4 +287,16 @@ pub fn compare_names(a: &Edge, b: &str) -> bool {
     } else {
         false
     }
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+
+    #[test]
+    fn cleanup_string(){
+        let result = clean_string("KAMUI: He&#039;s Behind You&#067;");
+        assert_eq!(result, String::from("KAMUIHesBehindYou"));
+    }
+
 }
