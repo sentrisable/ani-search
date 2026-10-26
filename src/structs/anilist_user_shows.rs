@@ -168,7 +168,7 @@ pub struct AnimeList {
     pub custom_lists: Vec<Value>,
     pub section_order: Vec<String>,
     pub split_completed_section_by_format: bool,
-    pub theme: Theme,
+    pub theme: Vec<Theme>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,7 +185,7 @@ pub struct MangaList {
     pub custom_lists: Vec<Value>,
     pub section_order: Vec<String>,
     pub split_completed_section_by_format: bool,
-    pub theme: Theme2,
+    pub theme: Vec<Theme2>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
