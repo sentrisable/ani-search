@@ -253,23 +253,22 @@ pub fn capitalize_word(input: &str) -> String {
     }
 }
 
-fn remove_html_code(input: &str)->String{
+fn remove_html_code(input: &str) -> String {
     let html_re = regex::Regex::new(r#"&#[a-zA-Z0-9]+;"#).unwrap();
     let mut result = String::from(input);
-    for cap in html_re.captures_iter(input){
+    for cap in html_re.captures_iter(input) {
         result = result.replace(&cap[0], "");
-        
-    //     result
-    // } else {
-    //     input.to_string()
+
+        //     result
+        // } else {
+        //     input.to_string()
     }
     result
-    
 }
 
 pub fn clean_string(input: &str) -> String {
     let removed_html = remove_html_code(input);
-    
+
     let result: String = removed_html
         .chars()
         .filter(|c| c.is_alphanumeric())
@@ -290,13 +289,12 @@ pub fn compare_names(a: &Edge, b: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests{
+mod tests {
     use super::*;
 
     #[test]
-    fn cleanup_string(){
+    fn cleanup_string() {
         let result = clean_string("KAMUI: He&#039;s Behind You&#067;");
         assert_eq!(result, String::from("KAMUIHesBehindYou"));
     }
-
 }
