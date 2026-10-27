@@ -1,6 +1,6 @@
 # ANISEARCH
 
-Anime searching and streaming utility built in Rust utilizing AniDB for streaming and Anilist for searching.
+Native Anime searching and streaming utility built in Rust utilizing hianme as the provider for streaming and anilist integration for search and watch progress.
 
 Modeled after [ani-cli](https://github.com/pystardust/ani-cli/tree/master) by pystardust.
 
