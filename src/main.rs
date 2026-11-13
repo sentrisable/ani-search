@@ -725,15 +725,15 @@ impl eframe::App for Main {
 
         Pages::Init=>{
 
-        dotenvy::dotenv().expect("Unable to load .env file");
+        //dotenvy::dotenv().expect("Unable to load .env file");
 
-        if let Ok(discord_client_id) = std::env::var("DISCORD_CLIENT_ID"){
-        if let Ok(discord_client) = create_rpc_client(&discord_client_id){
-        self.discord_rpc_client = Some(discord_client);
+        // if let Ok(discord_client_id) = std::env::var("DISCORD_CLIENT_ID"){
+        //     if let Ok(discord_client) = create_rpc_client(&discord_client_id){
+        //         self.discord_rpc_client = Some(discord_client);
 
-        }
+        //     }
 
-        }
+        // }
 
         if !self.config.app_settings.initialized && let Ok(config) = get_config(){
         self.config = config;
@@ -836,7 +836,7 @@ impl eframe::App for Main {
         self.pages = self.back();
         ui.ctx().request_repaint();
         }
-        ui.heading(&self.selected_show.name);
+        //ui.heading(&self.selected_show.name);
 
         ComboBox::new("translation", "Translation Type").selected_text(format!("{:?}", self.translation)).show_ui(ui, |ui|{
         ui.selectable_value(&mut self.translation, Translation::Sub, "Sub");

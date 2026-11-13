@@ -277,16 +277,16 @@ pub fn clean_string(input: &str) -> String {
     result
 }
 
-pub fn compare_names(a: &Edge, b: &str) -> bool {
-    // let clean_a = clean_string(&a.name);
-    // let clean_b = clean_string(b);
-    // dbg!(&clean_b);
-    if &a.name.to_lowercase() == &b.to_lowercase() {
-        true
-    } else {
-        false
-    }
-}
+// pub fn compare_names(a: &Edge, b: &str) -> bool {
+//     let clean_a = clean_string(&a.name);
+//     let clean_b = clean_string(b);
+//     dbg!(&clean_b);
+//     if &a.name.to_lowercase() == &b.to_lowercase() {
+//         true
+//     } else {
+//         false
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
