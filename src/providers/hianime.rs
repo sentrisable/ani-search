@@ -1,4 +1,5 @@
 use base64::prelude::*;
+use image::imageops::replace;
 use regex::{Regex, RegexBuilder};
 use reqwest::{Client, Response, StatusCode, header};
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,14 @@ pub struct HiAnimeEpisode {
     pub number: u32,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct HiAnimeLinks {
+    pub episodes: Option<Vec<HiAnimeEpisodeLink>>,
+    pub audio: Option<Vec<HiAnimeAudioLink>>,
+}
+
+
+
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct HiAnimeEpisodeLink {
     pub quality: String,
@@ -43,12 +52,25 @@ pub struct HiAnimeEpisodeLink {
     pub sub: Vec<Subtitles>,
 }
 
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct HiAnimeAudioLink {
+    pub uri: String,
+    pub lang_name: String,
+    pub lang_short: String,
+    pub group_id: String,
+    pub def: bool,
+    pub auto_select: bool
+}
+
+
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Subtitles {
     pub default: bool,
     pub label: String,
     pub lang: String,
     pub src: String,
+
 }
 
 #[derive(Clone, Debug)]
@@ -220,7 +242,7 @@ impl HiAnimeClient {
         &self,
         mode: &str,
         episode_id: u32,
-    ) -> Result<Vec<HiAnimeEpisodeLink>, Box<dyn Error>> {
+    ) -> Result<HiAnimeLinks, Box<dyn Error>> {
         let search_url = format!(
             "{}/api/theme/episode/servers?episodeId={}",
             self.inner.hianime_api, episode_id
@@ -244,8 +266,7 @@ impl HiAnimeClient {
             ".*data-type=\"{mode}\".*data-server-name=\"ZokoAnime\".*data-hash=\"([^\"]*)\".*"
         );
         let zoko_re = Regex::new(&zoko_pattern)?;
-        let mut link_map: Vec<HiAnimeEpisodeLink> = vec![];
-
+        let mut links = HiAnimeLinks::default();
         if let Some(caps) = zoko_re.captures(&formatted_response) {
             let hash = &caps[1];
 
@@ -267,7 +288,7 @@ impl HiAnimeClient {
 
             let blob = self.get_blob(&decoded_hash).await?;
             let blob_json: Value = serde_json::from_str(&blob)?;
-            dbg!(&blob_json);
+            //dbg!(&blob_json);
             if let Ok(file) = std::fs::File::create("blob.json") {
                 serde_json::to_writer(file, &blob_json);
             };
@@ -284,12 +305,13 @@ impl HiAnimeClient {
                 let y = serde_json::from_value::<Subtitles>(sub.clone())?;
                 sub_list.push(y);
             }
-
+            let playlist = self.get_playlist(m3u8_master, &refr).await?;
+            
             &dbg!(&refr);
-            link_map = self.get_video_link(&m3u8_master, &refr, sub_list).await?;
+            links = self.get_video_link(&m3u8_master, &refr, sub_list).await?;
         }
 
-        Ok(link_map)
+        Ok(links)
     }
 
     async fn get_blob(&self, hash: &str) -> Result<String, Box<dyn Error>> {
@@ -318,25 +340,22 @@ impl HiAnimeClient {
         Ok(blob)
     }
 
-    async fn get_m3u8_address(
+    async fn get_playlist(
         &self,
-
-        episode: &HiAnimeEpisodeLink,
+        m3u8_master: &str,
+        referrer: &str
     ) -> Result<String, Box<dyn Error>> {
-        let embed_response = self
+        let response = self
             .inner
             .http
-            .get(&episode.embed_url)
+            .get(m3u8_master)
+            .header(reqwest::header::REFERER, referrer)
             .send()
             .await?
             .text()
             .await?;
-
-        let file_re = Regex::new(r#".*file: '([^']*)'.*"#)?;
-        if let Some(caps) = file_re.captures(&embed_response) {
-            return Ok(caps[1].to_string());
-        }
-
+        dbg!(&response);
+    
         Ok(String::new())
     }
 
@@ -345,7 +364,7 @@ impl HiAnimeClient {
         link: &str,
         referrer: &str,
         subtitles: Vec<Subtitles>,
-    ) -> Result<Vec<HiAnimeEpisodeLink>, Box<dyn Error>> {
+    ) -> Result<HiAnimeLinks, Box<dyn Error>> {
         //dbg!(link);
         let link_response = self
             .inner
@@ -356,12 +375,32 @@ impl HiAnimeClient {
             .await?
             .text()
             .await?;
-        dbg!(&link_response);
+        //dbg!(&link_response);
         let mut link_map: Vec<HiAnimeEpisodeLink> = vec![];
+        let mut audio: Vec<HiAnimeAudioLink> = vec![];
         let lines: Vec<&str> = link_response.lines().map(|s| s.trim()).collect();
+        
         for line in lines {
-            dbg!(line);
-
+            dbg!(&line);
+            if line.contains("TYPE=AUDIO"){
+                let split: Vec<&str> = line.split(",").collect();
+                let group_id = split[1].replace("GROUP-ID=", "").replace("\"", "");
+                let lang_name= split[2].replace("NAME=", "").replace("\"", "");
+                let lang_short = split[3].replace("LANGUAGE=", "").replace("\"", "");
+                let def = split[4].replace("DEFAULT=", "").replace("\"", "");
+                let auto_select = split[5].replace("AUTOSELECT=", "").replace("\"", "");
+                let uri = split[6].replace("URI=", "").replace("\"", "");
+                let link_stub = link.replace("master.m3u8", "");
+                let audio_link = HiAnimeAudioLink{
+                    group_id,
+                    lang_name,
+                    lang_short,
+                    uri: format!("{link_stub}{uri}"),
+                    def: if def == "YES" {true} else {false},
+                    auto_select: if auto_select == "YES" {true} else {false}
+                };
+                audio.push(audio_link);
+            }
             if !line.starts_with("#") {
                 let split: Vec<&str> = line.split("/").collect();
                 let resolution = format!("{}p", split[0]);
@@ -375,7 +414,12 @@ impl HiAnimeClient {
                 };
                 link_map.push(episodes);
             }
+            
         }
-        Ok(link_map)
+        let links = HiAnimeLinks{
+            episodes: Some(link_map),
+            audio: Some(audio)
+        };
+        Ok(links)
     }
 }

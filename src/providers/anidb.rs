@@ -165,10 +165,7 @@ impl AniDbClient {
         &self,
         id: &str,
     ) -> Result<Option<Vec<AniDbEpisode>>, Box<dyn Error>> {
-        let search_url = format!(
-            "{}/api/theme/episode/list/{}",
-            self.inner.anidb_api, id
-        );
+        let search_url = format!("{}/api/theme/episode/list/{}", self.inner.anidb_api, id);
 
         let response: Value = self
             .inner
@@ -192,7 +189,6 @@ impl AniDbClient {
             Ok(None)
         }
     }
-
 
     pub async fn get_episode_m3u8(
         &self,
@@ -276,5 +272,4 @@ impl AniDbClient {
         }
         Ok(link_map)
     }
-
 }

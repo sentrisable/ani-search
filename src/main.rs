@@ -27,12 +27,7 @@ use rfd::FileDialog;
 use tokio::runtime::Runtime;
 
 use ani_search::{
-    Config, Edge, Translation, VideoPlayer, WatchStatus, anilist, anilist_search_shows,
-    anilist_user_shows::{self, List},
-    animeschedule, capitalize_word, check_credentials, clean_string, create_rpc_client, episodes,
-    get_config,
-    hianime::*,
-    search_anilist, update_discord_status, update_settings, write_to_log,
+    Config, Edge, Translation, VideoPlayer, WatchStatus, anilist, anilist_search_shows, anilist_user_shows::{self, List}, animeschedule, capitalize_word, check_credentials, clean_string, create_rpc_client, episodes, get_config, hianime::*, search_anilist, update_discord_status, update_progress, update_settings, write_to_log,
 };
 
 fn main() -> Result<()> {
@@ -105,6 +100,7 @@ struct Main {
 
     anime: String,
     translation: Translation,
+    mode: String,
     shows: Vec<Edge>,
     show_focus: bool,
     episode_list: episodes::AvailableEpisodesDetail,
@@ -123,13 +119,13 @@ struct Main {
 
     ani_db_show: HiAnimeId,
     ani_db_episodes: Vec<HiAnimeEpisode>,
-    episode_quality: Vec<HiAnimeEpisodeLink>,
+    episode_quality: HiAnimeLinks,
 
     hianime_tx: Sender<HiAnimeId>,
     hianime_rx: Receiver<HiAnimeId>,
 
-    hianime_quality_tx: Sender<Vec<HiAnimeEpisodeLink>>,
-    hianime_quality_rx: Receiver<Vec<HiAnimeEpisodeLink>>,
+    hianime_quality_tx: Sender<HiAnimeLinks>,
+    hianime_quality_rx: Receiver<HiAnimeLinks>,
 }
 
 impl Default for Main {
@@ -149,6 +145,7 @@ impl Default for Main {
             anime: Default::default(),
             translation: Translation::Sub,
             shows: Vec::new(),
+            mode: String::new(),
             show_focus: false,
             show_info: animeschedule::Anime::default(),
             selected_show: Edge::default(),
@@ -166,7 +163,7 @@ impl Default for Main {
 
             ani_db_show: HiAnimeId::default(),
             ani_db_episodes: Vec::new(),
-            episode_quality: Vec::new(),
+            episode_quality: HiAnimeLinks::default(),
 
             hianime_tx,
             hianime_rx,
@@ -211,12 +208,26 @@ impl Main {
         link: &str,
         referrer: &str,
         subs: Vec<Subtitles>,
+        audio: &Option<Vec<HiAnimeAudioLink>>
     ) -> Result<process::Child, std::io::Error> {
-        
+        let audio_file = match audio{
+            Some(a) => {
+                let mut uri = String::new();
+                for link in a{
+                    if link.def == true{
+                        uri = link.uri.clone();
+                    }
+                }
+                uri
+            },
+            None => String::default()
+        };
         let subs_cmd = format!("--sub-file={}", if !subs.is_empty(){&subs[0].src} else {""});
+        
         let spawn = match self.config.app_settings.video_player {
             VideoPlayer::MPV => process::Command::new("mpv")
                 .arg(&format!("--referrer={referrer}"))
+                .arg(&format!("--audio-file={audio_file}"))
                 .arg(&subs_cmd)
                 .arg("--tls-verify=no")
                 .arg("--cache=yes")
@@ -280,6 +291,11 @@ impl Main {
                                                                 if self.ani_db_show.episodes.is_some(){
                                                                     dbg!("CLEAR EPISODES");
                                                                     self.ani_db_show.episodes = None;
+                                                                }
+                                                                if self.episode_quality.episodes.is_some(){
+                                                                    dbg!("CLEAR QUALITY");
+                                                                    self.episode_quality = HiAnimeLinks::default();
+
                                                                 }
                                                                 self.anilist_selected_show = media.clone();
                                                                 self.show_focus = true;
@@ -394,109 +410,144 @@ impl eframe::App for Main {
         ui.add(egui::ProgressBar::new(episode_progress as f32).text(format!("{progress}/{episode_count}")));
         } else {
         if let Some(next_episode_main) = &self.anilist_selected_show.next_airing_episode{
-        if let Some(next_episode) = next_episode_main.episode{
-
-        let episode_progress = progress/(next_episode-1) as f32;
-
-        ui.add(egui::ProgressBar::new(episode_progress as f32).text(format!("{}/{}", progress, (next_episode-1))));
-        }
+            if let Some(next_episode) = next_episode_main.episode{
+                let episode_progress = progress/(next_episode-1) as f32;
+                ui.add(egui::ProgressBar::new(episode_progress as f32).text(format!("{}/{}", progress, (next_episode-1))));
+            }
         } else {
-        ui.label("Unable to Display Progress");
+            ui.label("Unable to Display Progress");
         }
         }
 
         egui::ComboBox::new("show_status", "Status").selected_text(format!("{:?}", self.anilist_show_status)).show_ui(ui, |ui|{
-        ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Completed, "Completed");
-        ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Repeating, "Repeating");
-        ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Watching, "Watching");
-        ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Paused, "Paused");
-        ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Dropped, "Dropped");
-        ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Planning, "Planning");
-        ui.selectable_value(&mut self.anilist_show_status, WatchStatus::None, "None");         
+            ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Completed, "Completed");
+            ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Repeating, "Repeating");
+            ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Watching, "Watching");
+            ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Paused, "Paused");
+            ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Dropped, "Dropped");
+            ui.selectable_value(&mut self.anilist_show_status, WatchStatus::Planning, "Planning");
+            ui.selectable_value(&mut self.anilist_show_status, WatchStatus::None, "None");         
         });
+        let status = self.anilist_show_status.clone();
+        if ui.button("Save Status").clicked(){
+            if self.anilist_token().is_some() && let Some(show_id) = self.anilist_selected_show.id{
+                update_progress(&show_id, None, &status, &self.anilist_token().clone());            
+            }
+        }
         }
 
         if let Some(title) = &self.anilist_selected_show.title &&
-        let Some(user_preferred) = &title.user_preferred{
-        ui.heading(user_preferred);
-        }
+            let Some(user_preferred) = &title.user_preferred{
+                ui.heading(user_preferred);
+            }
 
 
-        ui.horizontal(|ui|{
-        ui.label("Genres: ");
-        ui.separator();
-        if let Some(genres) = &self.anilist_selected_show.genres{
-        for genre in genres{
-        ui.label(genre);
-        ui.separator();
-
-        }
-        }
-
-        });
+            ui.horizontal(|ui|{
+                ui.label("Genres: ");
+                ui.separator();
+                if let Some(genres) = &self.anilist_selected_show.genres{
+                    for genre in genres{
+                        ui.label(genre);
+                        ui.separator();
+                    }
+                }
+            });
         if let Some(cover_image) = &self.anilist_selected_show.cover_image && let Some(extra_large) = &cover_image.extra_large{
-        ui.add(egui::Image::new(extra_large)
-        .max_width(ui.ctx().viewport_rect().width()/4.0)
-        .maintain_aspect_ratio(true));
+            ui.add(egui::Image::new(extra_large)
+            .max_width(ui.ctx().viewport_rect().width()/4.0)
+            .maintain_aspect_ratio(true));
         }
         ui.horizontal(|ui|{
         if let Some(title) = &self.anilist_selected_show.title{
-        let english = match &title.english{
-        Some(e) => e.to_string().chars().filter(|c| c.is_alphanumeric()).collect(),
-        None => "".to_string()
-        };
-        let romanji = match &title.romaji{
-        Some(r) => r.to_string().chars().filter(|c| c.is_alphanumeric()).collect(),
-        None => "".to_string()
-        };
+
         if let Some(user_preferred) = &title.user_preferred
-        && ui.button("Watch Sub").clicked(){
-        if let Ok(client)= HiAnimeClient::new(){
-        let tx = self.hianime_tx.clone();
-        let ctx = ui.ctx().clone();
-        let show_title = user_preferred.clone();
-        tokio::spawn(async move{
+            && ui.button("Watch Sub").clicked(){
+            if let Ok(client)= HiAnimeClient::new(){
+                let tx = self.hianime_tx.clone();
+                let ctx = ui.ctx().clone();
+                let show_title = user_preferred.clone();
+                let title = title.clone();
+                self.mode = String::from("sub");
 
-        let show_title = clean_string(&show_title);
-        dbg!(&show_title);
-        let shows = client.search(&show_title).await.expect("Unable to process query");
-        dbg!(&shows);
-        dbg!(&romanji);
-        for s in &shows{
-        if let Some(id) = &s.hianime_id && id.contains("uncensored"){
-        dbg!("uncensored");
+                tokio::spawn(async move{
+                    let english = match &title.english{
+                        Some(e) => e.to_string().chars().filter(|c| c.is_alphanumeric()).collect(),
+                        None => "".to_string()
+                    };
+                    let romanji = match &title.romaji{
+                        Some(r) => r.to_string().chars().filter(|c| c.is_alphanumeric()).collect(),
+                        None => "".to_string()
+                    };
+                    let show_title = clean_string(&show_title);
+                    let shows = client.search(&show_title).await.expect("Unable to process query");
+                    for s in &shows{
+                        if let Some(id) = &s.hianime_id && id.contains("uncensored"){
+                        dbg!("uncensored");
 
-        if let Some(show ) = shows.iter().find(|x|
-        clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&romanji.to_lowercase()) ||
-        clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&english.to_lowercase()))
-        {
+                            if let Some(show ) = shows.iter().find(|x|
+                                clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&romanji.to_lowercase()) ||
+                                clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&english.to_lowercase()))
+                                {
+                                    let _ = tx.send(show.clone());
+                                }
 
-        let _ = tx.send(show.clone());
-
+                            } else {
+                                if let Some(show ) = shows.iter().find(|x|
+                                    clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&romanji.to_lowercase()) ||
+                                    clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&english.to_lowercase()))
+                                    {
+                                        let _ = tx.send(show.clone());
+                                    };
+                                }
+                            ctx.request_repaint();
+                        }
+                    });
+            }
         }
+        if let Some(user_preferred) = &title.user_preferred
+            && ui.button("Watch Dub").clicked(){
+                if let Ok(client)= HiAnimeClient::new(){
+                let title = title.clone();
+                let tx = self.hianime_tx.clone();
+                let ctx = ui.ctx().clone();
+                let show_title = user_preferred.clone();
+                self.mode = String::from("dub");
+                tokio::spawn(async move{
+                    let english = match &title.english{
+                        Some(e) => e.to_string().chars().filter(|c| c.is_alphanumeric()).collect(),
+                        None => "".to_string()
+                    };
+                    let romanji = match &title.romaji{
+                        Some(r) => r.to_string().chars().filter(|c| c.is_alphanumeric()).collect(),
+                        None => "".to_string()
+                    };
 
-        } else {
-        // for show in shows.iter(){
-        //     if let Some(title) = &show.title{
-        //         let x = clean_string(title);
-        //         dbg!(&x);
-        //     }
-        // }
-        if let Some(show ) = shows.iter().find(|x|
-        clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&romanji.to_lowercase()) ||
-        clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&english.to_lowercase()))
-        {
-        let _ = tx.send(show.clone());
-        };
-        }
-        ctx.request_repaint();
-        }
-        });
-        }
+                    let show_title = clean_string(&show_title);
+                    let shows = client.search(&show_title).await.expect("Unable to process query");
+                    for s in &shows{
+                        if let Some(id) = &s.hianime_id && id.contains("uncensored"){
+                        dbg!("uncensored");
 
+                            if let Some(show ) = shows.iter().find(|x|
+                                clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&romanji.to_lowercase()) ||
+                                clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&english.to_lowercase()))
+                                {
+                                        let _ = tx.send(show.clone());
+                                }
 
-
-
+                            } else {
+                                if let Some(show ) = shows.iter().find(|x|
+                                    clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&romanji.to_lowercase()) ||
+                                    clean_string(&x.title.clone().unwrap_or_default()).to_lowercase().contains(&english.to_lowercase()))
+                                    {
+                                        let _ = tx.send(show.clone());
+                                    };
+                                }
+                            ctx.request_repaint();
+                        }
+                    });
+            }
+            }
         // if ui.button("Watch Dub").clicked() && let Ok(shows) = get_shows(&user_preferred, &Translation::Dub, &self.config){
         //         for show in shows{
         //             if show.name.to_lowercase() == user_preferred.to_ascii_lowercase(){
@@ -513,10 +564,9 @@ impl eframe::App for Main {
 
         //     }
         }
-        }
         });
         if let Ok(show) = self.hianime_rx.try_recv(){
-        self.ani_db_show = show;
+            self.ani_db_show = show;
         }
         let title = match &self.ani_db_show.title{
         Some(t) => t,
@@ -527,42 +577,45 @@ impl eframe::App for Main {
 
 
         match &mut self.ani_db_show.episodes {
-        Some(episodes)=> {let selected = vec![false; episodes.len()];
-        for (i, episode) in episodes.clone().iter().enumerate(){
+            Some(episodes)=> {let selected = vec![false; episodes.len()];
+                for (i, episode) in episodes.clone().iter().enumerate(){
 
-        ui.horizontal(|ui|{
-        if ui.selectable_label(selected[i], format!("Episode: {}", episode.number)).clicked(){
+                ui.horizontal(|ui|{
+                    if ui.selectable_label(selected[i], format!("Episode: {}", episode.number)).clicked(){
 
-        self.selected_episode = episode.number.to_string();
-        if let Ok(client) = HiAnimeClient::new(){
-        let tx = self.hianime_quality_tx.clone();
-        let ctx = ui.ctx().clone();
-        let episode_id = episode.id;
-        tokio::spawn(async move{
-        let episode_links= client.get_episode_m3u8("sub", episode_id).await.expect("unable to get episodes");
-        dbg!(&episode_links);
-        let _ = tx.send(episode_links);
-        ctx.request_repaint();
-        });
-        }
-        }
-        });
-        if self.selected_episode == episode.number.to_string(){
+                        self.selected_episode = episode.number.to_string();
+                        if let Ok(client) = HiAnimeClient::new(){
+                            let tx = self.hianime_quality_tx.clone();
+                            let ctx = ui.ctx().clone();
+                            let episode_id = episode.id;
+                            let mode = self.mode.clone();
+                            tokio::spawn(async move{
+                                let episode_links= client.get_episode_m3u8(&mode, episode_id).await.expect("unable to get episodes");
+                                let _ = tx.send(episode_links);
+                            ctx.request_repaint();
+                            });
+                        }
+                    }
+                });
+                if self.selected_episode == episode.number.to_string(){
+                    if let Ok(episode_quality) = self.hianime_quality_rx.try_recv(){
+                        self.episode_quality = episode_quality;
+                    }
+                    ui.horizontal(|ui|{
 
+                    let audio_links = self.episode_quality.audio.clone();
+                    let video_links = match self.episode_quality.episodes.clone(){
+                        Some(v) => v,
+                        None => vec![]
+                    };
 
-        if let Ok(episode_quality) = self.hianime_quality_rx.try_recv(){
-        self.episode_quality = episode_quality;
-        }
-        ui.horizontal(|ui|{
-
-
-        for (i, episode) in self.episode_quality.clone().iter().enumerate(){
-        let selected = vec![false; self.episode_quality.len()];
-        let color = if ui.theme() == egui::Theme::Dark{
-        Color32::from_rgb(121, 138, 179)
-        } else {
-        Color32::from_rgb(0, 255, 255)
-        };
+                    for (i, episode) in video_links.iter().enumerate(){
+                    let selected = vec![false; video_links.len()];
+                    let color = if ui.theme() == egui::Theme::Dark{
+                        Color32::from_rgb(121, 138, 179)
+                    } else {
+                        Color32::from_rgb(0, 255, 255)
+                    };
 
         let label = egui::Button::new(episode.clone().quality)
         .selected(selected[i])
@@ -583,7 +636,8 @@ impl eframe::App for Main {
         };
         }
 
-        match self.spawn_player(&media_title, &episode.embed_url, &episode.referrer, episode.sub.clone()){
+
+        match self.spawn_player(&media_title, &episode.embed_url, &episode.referrer, episode.sub.clone(), &audio_links ){
         Ok(spawned) => {
         match &mut self.discord_rpc_client{
         Some(client) => {
@@ -597,9 +651,9 @@ impl eframe::App for Main {
         let duration = self.anilist_selected_show.duration.unwrap_or_default();
 
         if duration.to_string() != self.selected_episode{
-        anilist::update_progress(&show_id, Some(&self.selected_episode.clone()), anilist::WatchStatus::Watching, &self.anilist_token().clone());
+            anilist::update_progress(&show_id, Some(&self.selected_episode.clone()), &anilist::WatchStatus::Watching, &self.anilist_token().clone());
         }else{
-        anilist::update_progress(&show_id, Some(&self.selected_episode.clone()), anilist::WatchStatus::Completed, &self.anilist_token().clone());
+            anilist::update_progress(&show_id, Some(&self.selected_episode.clone()), &anilist::WatchStatus::Completed, &self.anilist_token().clone());
         }
         }
 

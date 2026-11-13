@@ -9,7 +9,7 @@ pub struct AnilistVariables {
     pub user_id: i64,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum WatchStatus {
     Watching,
     Repeating,
@@ -112,7 +112,7 @@ pub fn check_credentials(token: &Option<&str>) -> Result<i64, Box<dyn std::error
 pub fn update_progress(
     show_id: &i64,
     episode_number: Option<&String>,
-    status: WatchStatus,
+    status: &WatchStatus,
     token: &Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     dbg!(&show_id);
